@@ -27,11 +27,34 @@ AUDIT_EVENTS = (
 )
 
 LLM_ERROR_CODES = ("REFUSAL", "MAX_TOKENS", "API_ERROR")
+DISPATCH_ERROR_CODES = (
+    "SCHEMA_INVALID",
+    "EVIDENCE_INVALID",
+    "PRECONDITION_FAILED",
+    "UNKNOWN_TARGET",
+    "RETRY_CAP_REACHED",
+    "TOOL_LOOP_LIMIT",
+    *LLM_ERROR_CODES,
+)
+# Sending the same dispatch again can succeed after these; the others need a different dispatch.
+RETRYABLE_DISPATCH_ERRORS = ("SCHEMA_INVALID", "EVIDENCE_INVALID", "TOOL_LOOP_LIMIT", "MAX_TOKENS", "API_ERROR")
+DISPATCH_ERROR_MAX_DETAILS = 20
+DISPATCH_ERROR_TEXT_MAX_CHARS = 300
 
 AGENT_ROLES = ("coordinator", "examiner", "reviewer", "writer")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 SUBAGENT_TOOLS = ("list_files", "read_file", "list_manifests", "read_manifest", "query_osv")
 SUBSTANCE_RATINGS = ("core", "peripheral", "toy")
+
+CONTRACTS = ("examination", "review", "writer_output", "disposition")
+FINDING_SEVERITIES = ("critical", "high", "medium", "low")
+CHALLENGE_RESPONSES = ("upheld", "rejected")
+REVIEW_VERDICTS = ("pass", "challenge", "block")
+LENSES = ("challenge", "catch", "detect")
+CHALLENGE_SEVERITIES = ("critical", "major", "minor")
+DISPOSITION_DECISIONS = ("accept", "escalate")
+ADVISORY_STEP = "known_vulnerabilities"
+REDACT_KEEP_CHARS = 4
 
 MAX_TOKENS = 16000
 SDK_MAX_RETRIES = 2

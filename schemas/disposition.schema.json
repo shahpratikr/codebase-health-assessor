@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "workflow": {"type": "string"},
+          "step": {"type": "string"},
+          "examination_id": {"type": "string"},
+          "decision": {"type": "string", "enum": ["accept", "escalate"]},
+          "rationale": {"type": "string"}
+        },
+        "required": ["workflow", "step", "examination_id", "decision", "rationale"],
+        "additionalProperties": false
+      }
+    },
+    "summary": {"type": "string"}
+  },
+  "required": ["steps", "summary"],
+  "additionalProperties": false
+}

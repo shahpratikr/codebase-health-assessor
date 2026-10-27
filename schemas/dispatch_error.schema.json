@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dispatch_error.schema.json",
+  "title": "Dispatch error",
+  "description": "What the coordinator gets in place of a dispatch result; never sent to the API as a schema.",
+  "type": "object",
+  "required": ["error"],
+  "properties": {
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable", "details"],
+      "properties": {
+        "code": {
+          "enum": [
+            "SCHEMA_INVALID",
+            "EVIDENCE_INVALID",
+            "PRECONDITION_FAILED",
+            "UNKNOWN_TARGET",
+            "RETRY_CAP_REACHED",
+            "TOOL_LOOP_LIMIT",
+            "REFUSAL",
+            "MAX_TOKENS",
+            "API_ERROR"
+          ]
+        },
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"},
+        "details": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "code": {"enum": ["SCHEMA_INVALID", "EVIDENCE_INVALID", "TOOL_LOOP_LIMIT", "MAX_TOKENS", "API_ERROR"]}
+        }
+      },
+      "then": {"properties": {"retryable": {"const": true}}},
+      "else": {"properties": {"retryable": {"const": false}}}
+    }
+  },
+  "additionalProperties": false
+}

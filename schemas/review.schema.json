@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "target_id": {"type": "string"},
+    "verdict": {"type": "string", "enum": ["pass", "challenge", "block"]},
+    "summary": {"type": "string"},
+    "challenges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding_id": {"type": "string"},
+          "lens": {"type": "string", "enum": ["challenge", "catch", "detect"]},
+          "severity": {"type": "string", "enum": ["critical", "major", "minor"]},
+          "claim": {"type": "string"},
+          "evidence_checked": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {"file": {"type": "string"}, "line": {"type": "integer"}},
+              "required": ["file", "line"],
+              "additionalProperties": false
+            }
+          },
+          "rationale": {"type": "string"}
+        },
+        "required": ["finding_id", "lens", "severity", "claim", "evidence_checked", "rationale"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["target_id", "verdict", "summary", "challenges"],
+  "additionalProperties": false
+}

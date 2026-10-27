@@ -23,7 +23,7 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli` (argument parsing only), `config`, `audit`, `llm`, `manifest` (not drawn; `cli` will load the manifests at run start), `sandbox` and `tools` with the OSV transport. Nothing calls `sandbox` or `tools` yet; `coordinator` and `agents.runner` are planned.
+Built today: `cli` (argument parsing only), `config`, `audit`, `llm`, `manifest` (not drawn; `cli` will load the manifests at run start), `sandbox`, `tools` with the OSV transport, and `guardrails` (not drawn; `agents.runner` and `coordinator` will call it). Nothing calls `sandbox`, `tools` or `guardrails` yet; `coordinator` and `agents.runner` are planned.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
@@ -44,12 +44,12 @@ codebase-health-assessor/
 ├── README.md                     # (planned) setup, usage, capability → path evidence map, packaging
 ├── docs/                         # PRD.md, ARCHITECTURE.md
 ├── config/pricing.json           # $/MTok per model
-├── schemas/                      # audit_event, manifest, substance (.schema.json); (planned) examination,
-│                                 #   review, writer_output, disposition, dispatch_error
+├── schemas/                      # audit_event, manifest, substance, examination, review, writer_output,
+│                                 #   disposition, dispatch_error (.schema.json)
 ├── src/assessor/
-│   ├── cli.py, config.py, audit.py, llm.py, manifest.py, sandbox.py
+│   ├── cli.py, config.py, audit.py, llm.py, manifest.py, sandbox.py, guardrails.py
 │   ├── tools/__init__.py, tools/files.py, tools/deps.py
-│   ├── guardrails.py, coordinator.py, gates.py, report.py                            (planned)
+│   ├── coordinator.py, gates.py, report.py                                           (planned)
 │   └── agents/runner.py                                                              (planned)
 ├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic; fixtures/ holds an OSV
 │                                 #   replay sample
@@ -69,13 +69,13 @@ codebase-health-assessor/
 | Component | Responsibility | Depends on |
 |---|---|---|
 | `cli` | `build_parser()` defines `run` and `decide` and validates their arguments. `main(argv)` returns the exit code. Both commands are stubs today. *(planned)* Wires a run (input, credentials, run directory, coordinator, gates, report) and the decide path. | `config`; *(planned)* `coordinator`, `gates`, `report`, `sandbox`, `manifest`, `audit`, and `llm` for credentials |
-| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS` and `SUBSTANCE_RATINGS`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. *(planned)* Every other closed set. | standard library |
+| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `DISPATCH_ERROR_CODES` (with its `RETRYABLE_DISPATCH_ERRORS` subset), `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS`, `SUBSTANCE_RATINGS`, `CONTRACTS` and the output value enums (Closed sets), API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. Guardrail settings: `ADVISORY_STEP`, `DISPATCH_ERROR_MAX_DETAILS`, `DISPATCH_ERROR_TEXT_MAX_CHARS`, `REDACT_KEEP_CHARS`. *(planned)* Every other closed set. | standard library |
 | `audit` | `AuditLog`: one run's append-only JSONL trail. Validates each line against `audit_event.schema.json` before writing, computes cost from pricing, generates correlation IDs (`new_correlation_id`). *(planned)* Per-agent summary totals. | `config`, `jsonschema` |
 | `llm` | The Messages API gateway. `call()` builds the request, writes one `llm_call` line per call and maps failures to `LLMError`. `make_client()` returns an SDK client or raises `NoCredentialsError`. | `anthropic`, `config`, `audit` |
 | `manifest` | `load_manifests()` loads `coordinator.json` and the manifest each `launch_<agent>` tool names, and fails closed (`ValueError` naming the file) on the checks under Agents. `load_substance(manifests, path)` loads the shipped or a replacement ratings file the same way. An `OSError` from reading `coordinator.json`, a sub-agent manifest that exists, the substance file or the pricing file propagates as is. | `config`, `jsonschema` |
 | `sandbox` | `Workspace`: `resolve()` confines every path to the workspace root (`Path.resolve()` plus an `is_relative_to` check, so symlinks cannot escape) and refuses NUL and characters the filesystem cannot encode (lone surrogates other than U+DC80-U+DCFF, which stand for name bytes that are not UTF-8), absolute paths and paths through `SKIPPED_DIRS` in any letter case. `read_lines()` applies the read caps, refuses binary (NUL-holding) files and reads bytes that are not UTF-8 as U+FFFD; it is the one place lines are counted. `walk()` lists files lazily, without following directory symlinks, skipping looping ones and skipping, and reporting, directories it cannot open. `check_input()` refuses a missing path, a non-zip file, an archive whose entry list cannot be read (a newer format version, a name that is not UTF-8) and an archive over the caps or with an escaping or encrypted entry, reading only the entry list and writing nothing. `open_workspace()` returns a directory in place or extracts a zip member by member into `<run_dir>/workspace/`; a member that fails only when read (an unsupported compression method, a bad CRC) fails there, and the partial workspace is removed. Input problems raise `ValueError`. | `config` |
 | `tools` | `execute(manifest, name, input, *, workspace, osv=None)` returns a `ToolResult(content, is_error, allowed)`: a tool the manifest does not declare is refused unrun with `allowed: false`, input that breaks the tool's `INPUT_SCHEMAS` entry and a tool's own failure are `is_error` results, and only a broken replay file raises. `files`: `list_files`, `read_file`. `deps`: `list_manifests`, `read_manifest` (recognised manifest files only, checked on the resolved name too), `query_osv` over a live or replay transport. | `sandbox`, `config`, `jsonschema`, `httpx2` |
-| `guardrails` *(planned)* | `validate(contract, output, ctx)` returns the output or a DispatchError, after JSON Schema validation and then the semantic checks. `redact()` masks secret-like values. | `config` |
+| `guardrails` | `validate(contract, output, ctx)` returns a copy of the output once it passes its contract's JSON Schema and then its semantic checks, or raises `DispatchError` (Interfaces, Output contracts). `ctx` is the contract's context: `ExaminationContext`, `ReviewContext`, `WriterContext` or `DispositionContext`. `DispatchError(code, message, details)` carries a code from `DISPATCH_ERROR_CODES` and its `retryable` flag, and `to_result()` gives the object the coordinator receives. `redact(value)` masks secret-like values in every string of a JSON value. | `config`, `sandbox`, `jsonschema` |
 | `agents.runner` *(planned)* | `run_subagent(manifest, task, ctx)` starts a fresh message list, sends only the manifest's tools, runs the tool loop up to `max_tool_calls`, and returns a validated, redacted dict or a DispatchError. | `llm`, `tools`, `guardrails`, `manifest`, `audit`, `config` |
 | `coordinator` *(planned)* | The coordinator loop and its four `launch_*` handlers: ID resolution, retry cap, writer preconditions, turn cap and `RunState`. | `agents.runner`, `guardrails`, `manifest`, `llm`, `audit`, `config` |
 | `gates` *(planned)* | Opens gates once at run end, appends decisions to `decisions.jsonl` under `fcntl.flock`, and derives the effective status. | `audit`, `config` |
@@ -124,7 +124,7 @@ The examiners' system prompts are their prompt plus their skill checklist *(plan
 | Python | `>=3.14,<4.0` (poetry: `~3.14`) | chosen runtime |
 | poetry | — | dependency locking and the in-project virtualenv |
 | `anthropic` | 2.3.0 | the official SDK: `beta.messages.create` carries the fallback beta, `output_config` and typed errors |
-| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings and tool inputs; *(planned)* of agent outputs, from the same schema files sent as `output_config.format` |
+| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings, tool inputs and agent outputs; the output schemas are the same files *(planned)* sent as `output_config.format` |
 | `httpx2` | 2.16.0, declared directly | the OSV client, and the SDK's own HTTP client |
 | `pytest` | 9.1.1, dev group | test runner |
 
@@ -176,26 +176,33 @@ A line is a JSON object in the shape `schemas/audit_event.schema.json` defines. 
 | Correlation ID | `YYYYMMDDTHHMMSSZ-<8 lowercase hex>`, UTC start time plus 4 random bytes | built |
 | Step ID | `<cid>:<seq>` | built |
 | Examination | `EX-<CODE>-v<n>` | planned |
-| Finding | `<CODE>-<n>`, assigned by the harness in order | planned |
+| Finding | `<CODE>-<n>`, assigned in order by `guardrails.validate` to an accepted examination; numbering restarts with each examination version | built |
 | Review | `RV-<n>` | planned |
 | Challenge | `RV-<n>-C<k>`, assigned by the harness | planned |
 | Draft | `DR-v<n>` | planned |
 
 ### Closed sets
 
-Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dispatch_started`, `dispatch_finished`, `guardrail_rejected`, `gate_opened`, `run_finished`, `decision_recorded`), `LLM_ERROR_CODES` (`REFUSAL`, `MAX_TOKENS`, `API_ERROR`), `AGENT_ROLES` (coordinator, examiner, reviewer, writer), `EFFORTS` (low, medium, high, xhigh, max: the installed SDK's set), `SUBAGENT_TOOLS` (`list_files`, `read_file`, `list_manifests`, `read_manifest`, `query_osv`) and `SUBSTANCE_RATINGS` (core, peripheral, toy). The manifest and substance schemas repeat these enums, and `tests/test_manifest.py` keeps them equal. Also built: `SKIPPED_DIRS` (`.git`, `node_modules`, `.venv`, matched in any letter case), `OSV_ECOSYSTEMS` (PyPI, npm), `OSV_VERSION_RANGES` (ECOSYSTEM, SEMVER), `DEPENDENCY_FILE_KINDS` (manifest, lockfile) and `DEPENDENCY_FILES` (listed under Configuration); `tools.INPUT_SCHEMAS` covers exactly `SUBAGENT_TOOLS` (`tests/test_tools.py`). *(planned)*:
+Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dispatch_started`, `dispatch_finished`, `guardrail_rejected`, `gate_opened`, `run_finished`, `decision_recorded`), `LLM_ERROR_CODES` (`REFUSAL`, `MAX_TOKENS`, `API_ERROR`), `AGENT_ROLES` (coordinator, examiner, reviewer, writer), `EFFORTS` (low, medium, high, xhigh, max: the installed SDK's set), `SUBAGENT_TOOLS` (`list_files`, `read_file`, `list_manifests`, `read_manifest`, `query_osv`) and `SUBSTANCE_RATINGS` (core, peripheral, toy). The manifest and substance schemas repeat these enums, and `tests/test_manifest.py` keeps them equal. Also built: `SKIPPED_DIRS` (`.git`, `node_modules`, `.venv`, matched in any letter case), `OSV_ECOSYSTEMS` (PyPI, npm), `OSV_VERSION_RANGES` (ECOSYSTEM, SEMVER), `DEPENDENCY_FILE_KINDS` (manifest, lockfile) and `DEPENDENCY_FILES` (listed under Configuration); `tools.INPUT_SCHEMAS` covers exactly `SUBAGENT_TOOLS` (`tests/test_tools.py`).
+
+Also built, for the output contracts; the contract schemas repeat the value enums, and `tests/test_guardrails.py` keeps them equal:
+
+- **DispatchError codes** (`DISPATCH_ERROR_CODES`: six of its own, then `LLM_ERROR_CODES`):
+  - retryable (`RETRYABLE_DISPATCH_ERRORS`; sending the same dispatch again can succeed): `SCHEMA_INVALID`, `EVIDENCE_INVALID`, `TOOL_LOOP_LIMIT`, `MAX_TOKENS`, `API_ERROR`
+  - not retryable: `PRECONDITION_FAILED`, `UNKNOWN_TARGET`, `RETRY_CAP_REACHED`, `REFUSAL`
+- **Contracts** (`CONTRACTS`): examination, review, writer_output, disposition
+- **Finding severity** (`FINDING_SEVERITIES`): critical, high, medium, low
+- **Challenge response** (`CHALLENGE_RESPONSES`): upheld, rejected
+- **Review verdict** (`REVIEW_VERDICTS`): pass, challenge, block
+- **Lens** (`LENSES`): challenge, catch, detect
+- **Challenge severity** (`CHALLENGE_SEVERITIES`): critical, major, minor
+- **Disposition decision** (`DISPOSITION_DECISIONS`): accept, escalate
+
+*(planned)*:
 
 - **Run status:** `finalized`, `pending_human`, `halted`; derived from decisions: `finalized_by_human`, `rejected_by_human`
 - **Gates:** `SUBSTANCE_ELEVATION`, `OPEN_CRITICAL_CHALLENGE`, `COORDINATOR_ESCALATION`
-- **DispatchError codes:**
-  - retryable: `SCHEMA_INVALID`, `EVIDENCE_INVALID`, `TOOL_LOOP_LIMIT`, `MAX_TOKENS`, `API_ERROR`
-  - not retryable: `PRECONDITION_FAILED`, `UNKNOWN_TARGET`, `RETRY_CAP_REACHED`, `REFUSAL`
 - **Halt reasons:** `COORDINATOR_TURN_LIMIT`, `COORDINATOR_REFUSAL`, `COORDINATOR_MAX_TOKENS`, `COORDINATOR_API_ERROR`, `NO_REPORT`, `REPORT_NOT_REVIEWED`
-- **Finding severity:** critical, high, medium, low
-- **Review verdict:** pass, challenge, block
-- **Lens:** challenge, catch, detect
-- **Challenge severity:** critical, major, minor
-- **Disposition decision:** accept, escalate
 - **Human decision:** continue, reject
 - **Section status:** PASS, FAIL
 - **Report titles:**
@@ -314,30 +321,49 @@ Results:
 - examination: examination_id, step, version, computed status, findings `{id, severity, title, file, line}`
 - review: review_id, target_id, verdict, challenges
 - draft: draft_id, section count
-- otherwise: `{"error": {code, message, retryable, details}}`
+- otherwise: `{"error": {code, message, retryable, details}}` (`DispatchError.to_result()`, shape: `schemas/dispatch_error.schema.json`). `details` is a list of strings, one per problem found.
 
-### Output contracts *(planned)*
+### Output contracts
 
-One JSON Schema per contract under `schemas/`, sent as `output_config.format` and checked with `jsonschema`.
+One JSON Schema per contract under `schemas/`, checked by `guardrails.validate` with `jsonschema` and *(planned)* sent as `output_config.format` (sub-agent outputs) or as part of the strict `launch_final_review_writer` input schema (disposition). Each uses only the structured-outputs keywords, and every field is required. A JSON integer must be a whole number: `2.0` and `true` are refused. `schemas/dispatch_error.schema.json` is not a contract: it describes what the coordinator receives, is never sent to the API, and so may use any Draft 2020-12 keyword.
 
-- **Examination:** `{workflow, step, summary, findings: [{title, severity, category, file, line, evidence, recommendation, advisory_ids: [str]}], limitations: [str], challenge_responses: [{challenge_id, response: upheld|rejected, rationale}]}`
-- **Review:** `{target_id, verdict, summary, challenges: [{finding_id, lens, severity, claim, evidence_checked: [{file, line}], rationale}]}`
+- **Examination:** `{workflow, step, summary, findings: [{title, severity, category, file, line, evidence, recommendation, advisory_ids: [str]}], limitations: [str], challenge_responses: [{challenge_id, response: upheld|rejected, rationale}]}`. Every finding cites a file and line. An absence is a finding only when it has a file to cite, such as a missing lockfile cited at its manifest; with nothing to cite, such as no dependency manifest at all, it is a limitation.
+- **Review:** `{target_id, verdict, summary, challenges: [{finding_id, lens, severity, claim, evidence_checked: [{file, line}], rationale}]}`. An empty `finding_id` marks a challenge on no single finding.
 - **Writer output:** `{executive_summary, sections: [{key: "<workflow>.<step>", prose}]}`
+- **Disposition:** `{steps: [{workflow, step, examination_id, decision: accept|escalate, rationale}], summary}`
 
-Semantic checks in `guardrails`, after the schema:
-- **Examination:**
-  - finding IDs unique
-  - `file` exists in the workspace, and `1 ≤ line ≤` its length
-  - `advisory_ids` empty unless the step is known_vulnerabilities
-- **Review:**
-  - `target_id` exists
-  - each non-empty `finding_id` is in the target
-  - verdict matches its challenges (rule: docs/PRD.md, Glossary, Review)
-- **Writer:** every cited `[ID]` is in the input; each section appears exactly once; no empty prose; no prose line starting with `#`
-- **Disposition:**
-  - covers each of the 4 steps exactly once
-  - each `examination_id` exists and belongs to its step
-  - each of those examinations has a review (`PRECONDITION_FAILED` otherwise)
+`validate` runs the schema first, then the semantic checks below in order, and raises at the first group with a problem. That `DispatchError` lists every problem of its group in `details`.
+
+| Contract | Context | Check | Code |
+|---|---|---|---|
+| any | — | the output breaks its schema | `SCHEMA_INVALID` |
+| examination | `ExaminationContext(workflow, step, code, workspace)` | `workflow` and `step` are not the dispatched ones; `advisory_ids` on a finding of any step but `ADVISORY_STEP` (known_vulnerabilities); a finding's `title`, `evidence` or `recommendation` is empty or blank | `SCHEMA_INVALID` |
+| | | a finding's `file` is one `Workspace.read_lines` refuses (missing, a directory, binary, over the read cap, outside the workspace, under a skipped directory, unreadable), or its `line` is outside `1..` that file's line count | `EVIDENCE_INVALID` |
+| review | `ReviewContext(target_id, finding_ids)` | `target_id` is not the dispatched target; the verdict does not follow from the challenges (rule: docs/PRD.md, Glossary, Review); a challenge's `claim` or `rationale` is empty or blank, its `evidence_checked` is empty, or an entry there has a blank `file` or a `line` below 1 | `SCHEMA_INVALID` |
+| | | a non-empty `finding_id` is not a finding of the target | `EVIDENCE_INVALID` |
+| writer output | `WriterContext(steps, input_ids)` | a step's section is missing or repeated, or a section names no step of the run | `SCHEMA_INVALID` |
+| | | the executive summary or a section's prose is empty or blank, or has a line that renders as a heading: one whose first non-blank character is `#`, or that is a setext underline (only `=` or `-`), either also after `>` or a list marker (`-`, `*`, `+`, `1.`, `1)`); or one holding an HTML heading tag `<h1>`…`<h6>`, also at the end of the line | `SCHEMA_INVALID` |
+| | | prose cites an ID not in `input_ids`: a cited ID is the longest start of any token inside `[...]`, less leading and trailing hyphens, that is made of letter-led, hyphen-joined parts whose last part holds a digit (so `[SEC-98-new]` cites `SEC-98`) (`SEC-1`, `sec-1`, `RV-2-C1`, `CVE-2018-18074`, `CWE-798`; not `x-ray` or `A-Z`), several to a bracket allowed. The caller decides what `input_ids` holds, so a standard such as `[CWE-798]` is refused unless it is there | `EVIDENCE_INVALID` |
+| disposition | `DispositionContext(steps, examinations, reviewed)` | a step is missing or repeated, or an entry names no step of the run | `SCHEMA_INVALID` |
+| | | an `examination_id` is unknown or belongs to another step | `UNKNOWN_TARGET` |
+| | | an `examination_id` has no review | `PRECONDITION_FAILED` |
+
+An accepted examination comes back with an `id` (`<code>-<n>`, in order) on each finding, so finding IDs are unique within it. Challenge, review, examination and draft IDs are assigned by *(planned)* `agents.runner` and `coordinator`, which hold the run's counters.
+
+**`DispatchError`** text can echo agent output, so its message and each detail are passed through `redact()`, have lone surrogates escaped as `\uXXXX`, and are cut to `DISPATCH_ERROR_TEXT_MAX_CHARS` (300) characters. `details` holds at most `DISPATCH_ERROR_MAX_DETAILS` (20) entries; past that, the last entry says how many more were not shown. A file problem gives only the `OSError` reason, never the workspace's absolute path.
+
+**`redact(value)`** returns a copy of a JSON value in which every string, at any depth, has each secret-like substring replaced by `<redacted:XXXX…>`. `XXXX` is the secret's first `REDACT_KEEP_CHARS` (4) characters, or its first half when that is fewer, so a short password is never shown whole. Dict keys, numbers, booleans and `None` are kept, and redacting twice changes nothing more. It masks:
+- AWS access key IDs: `AKIA` or `ASIA` plus 16 upper-case letters or digits, wherever they appear
+- AWS secret access keys: 40 base64 characters that mix upper case, lower case and a digit or `+` (so a 40-character git SHA or path is not one)
+- PEM private-key blocks, `BEGIN` to `END`, or, when no `END` comes before the next `BEGIN`, over the base64 lines that follow; literal `\n` escapes count as line breaks
+- `sk-` tokens (OpenAI, Anthropic) and GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), unless a letter or digit comes right before them
+- the value assigned to a name containing `password`, `secret`, `token` or `api_key` (also `apikey`, `api-key`; any letter case). The name may be a quoted or subscript key (`"Admin Password":`, `config["SECRET_KEY"] =`) and may carry a type (`password: str =`, `let password: &str =`, `var password string =`); the assignment may itself sit inside a quoted line (`Found "SECRET_KEY = 'x'"`). The value is masked whole:
+  - a quoted value after `=`, `==`, `=>`, `:=` or `:`, up to its closing quote; backslash escapes and JSON-escaped quotes (`\"`) are followed, an unclosed quote runs to the end of the line, and a triple-quoted value may span lines. A value never starts with a space, `)`, `,` or `;`, so the closing quote of a prompt such as `getpass("Enter your password: ")` is not taken for the opening quote of a value
+  - an unquoted value after `=`, `=>` or `:=`, up to the next whitespace, unless it is a call or subscript (`os.environ["X"]`, `get_token()`, `get ("X")`, or a call whose arguments run past the whitespace) or has no letter or digit
+  - an unquoted value after `:` only when it is the last token on its line (YAML `password: x`), so prose such as "Secrets: none found" stays whole
+  - when the value is a call, subscript or bracketed group, every quoted literal inside its brackets, across lines, except a call's leading literal argument: `os.environ.get("SECRET_KEY", "<redacted:dev-…>")` keeps the key it reads and masks the hard-coded default
+
+Assignments are masked before the token kinds, so a value is masked whole even when it starts with a token, and a value that already is or holds a marker is left as it is. Masking is fail-safe, so code values are masked too: `max_tokens=4096`, `api_key: str | None = None`, a YAML-like `password: str` or `Token: none` at the end of a line. Not masked: other names (`passwd`, `pwd`, `private_key`), URL user info (`postgres://u:p@h`), `Authorization: Bearer …`, command-line flags (`--password x`, `curl -u u:p`), XML attributes and elements, YAML values followed by a comment or inside a flow mapping or block scalar, Markdown-decorated names (`**password**:`), the leading literal of a call (so `SecretStr("x")` keeps `x`), a literal after an unquoted reference (`process.env.PW || "x"`), a value continued on the next line with `\`, a PEM body line without its `BEGIN` line, and secrets inside dict keys or non-JSON values.
 
 ### `report.md` *(planned)*
 
@@ -389,6 +415,7 @@ A criterion passes only when it meets its threshold in every run.
 | OSV | `config` | `https://api.osv.dev/v1/query`, 10 s timeout per connect, read or write (not a total deadline); ecosystems PyPI and npm; ranges ECOSYSTEM and SEMVER; summaries up to 300 characters | built |
 | recognised dependency files | `config.DEPENDENCY_FILES` | PyPI: `requirements*.txt`, `pyproject.toml`, `Pipfile` (manifests); `Pipfile.lock`, `poetry.lock`, `uv.lock` (lockfiles). npm: `package.json` (manifest); `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` (lockfiles). Names match case-sensitively. | built |
 | substance ratings | `manifests/substance.json`, or `--substance FILE` | the shipped ratings | file and loader built; `--substance` planned |
+| guardrails | `config` | `DISPATCH_ERROR_MAX_DETAILS` 20, `DISPATCH_ERROR_TEXT_MAX_CHARS` 300, `REDACT_KEEP_CHARS` 4, `ADVISORY_STEP` known_vulnerabilities | built |
 
 ## Decisions
 
@@ -404,6 +431,9 @@ A criterion passes only when it meets its threshold in every run.
 | Loader scope | Load `coordinator.json` and only the manifests its `launch_*` tools name | Nothing outside the coordinator's tools can be loaded as an agent | Loading every `*.json` in `manifests/` |
 | Output contracts | One JSON Schema per contract, used for both `output_config.format` and `jsonschema`; ranges and lengths live in the semantic checks | One source of truth that stays inside the structured-outputs keyword subset (the keywords: CLAUDE.md, Constraints) | Pydantic models (a second schema source); free-text parsing |
 | Semantic checks | Deterministic checks in `guardrails` | Not left to the prompt | Prompt-only rules |
+| Guardrail failures | `validate` raises `DispatchError`; the first check group with a problem decides the code, and every problem of that group is listed | One object carries the code, its retryable flag and the coordinator's view; the agent gets every fix to make in one retry | Returning an error value; stopping at the first problem |
+| Finding IDs | `validate` assigns them to an accepted examination from the step code | They need only the step code, and the review and writer checks cite them | Model-written IDs (a duplicate-ID check would be needed); assigning them in the runner |
+| Redaction scope | Pattern-based masking of the secret kinds listed under Output contracts; after `:`, an unquoted value only as the last token on its line; in a call assigned to a secret name, every literal but a leading one; a secret under 8 characters keeps only its first half | Catches YAML secrets while a `:` in prose ("Secrets: none found") stays whole; a short secret is never shown in full | Masking every `name: value` (garbles prose); leaving YAML unmasked (secrets on disk); always keeping 4 characters; entropy scanning (false positives on hashes and IDs) |
 | Steps and status | Steps are check areas with codes; the harness computes section status | PASS or FAIL follows from the findings, not from the model's wording | Status declared by the model; dispatching whole workflows only |
 | Disposition channel | An argument of `launch_final_review_writer` | Keeps the coordinator to dispatch verbs only | A `record_disposition` tool |
 | Challenge passing | The coordinator passes `challenge_ids`; the harness resolves them verbatim | The challenge reaches the examiner unaltered | The coordinator paraphrasing |

@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "workflow": {"type": "string"},
+    "step": {"type": "string"},
+    "summary": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+          "category": {"type": "string"},
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "evidence": {"type": "string"},
+          "recommendation": {"type": "string"},
+          "advisory_ids": {"type": "array", "items": {"type": "string"}}
+        },
+        "required": ["title", "severity", "category", "file", "line", "evidence", "recommendation", "advisory_ids"],
+        "additionalProperties": false
+      }
+    },
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "challenge_responses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "challenge_id": {"type": "string"},
+          "response": {"type": "string", "enum": ["upheld", "rejected"]},
+          "rationale": {"type": "string"}
+        },
+        "required": ["challenge_id", "response", "rationale"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["workflow", "step", "summary", "findings", "limitations", "challenge_responses"],
+  "additionalProperties": false
+}

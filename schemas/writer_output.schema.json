@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "executive_summary": {"type": "string"},
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {"key": {"type": "string"}, "prose": {"type": "string"}},
+        "required": ["key", "prose"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["executive_summary", "sections"],
+  "additionalProperties": false
+}
