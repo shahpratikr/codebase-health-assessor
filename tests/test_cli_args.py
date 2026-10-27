@@ -32,7 +32,7 @@ def _exit_code(argv):
         (["decide", "--help"], "usage: assess decide ", ["cid", "{continue,reject}", "--reviewer NAME", "--note TEXT"]),
     ],
 )
-def test_ac21_help_exits_0(capsys, argv, usage, listed):
+def test_help_exits_0(capsys, argv, usage, listed):
     assert _exit_code(argv) == 0
     out = capsys.readouterr().out
     assert out.startswith(usage)
@@ -58,7 +58,7 @@ def test_ac21_help_exits_0(capsys, argv, usage, listed):
         (["decide", CID, "--decision", "reject", "--reviewer", "ana", "--no", "x"], "unrecognized arguments: --no x"),
     ],
 )
-def test_ac21_usage_error_exits_2(capsys, argv, message):
+def test_usage_error_exits_2(capsys, argv, message):
     assert _exit_code(argv) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -94,24 +94,24 @@ def test_ac21_usage_error_exits_2(capsys, argv, message):
         "٢٠٢٦١٠٢٧T101500Z-0a1b2c3d",
     ],
 )
-def test_ac21_malformed_cid_exits_2(capsys, cid):
+def test_malformed_cid_exits_2(capsys, cid):
     assert _exit_code(["decide", cid, "--decision", "continue", "--reviewer", "ana"]) == 2
     assert "argument cid: must match YYYYMMDDTHHMMSSZ-<8 lowercase hex>" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("reviewer", ["", " \t ", "​", "⠀", "..."])
-def test_ac21_reviewer_without_letter_or_digit_exits_2(capsys, reviewer):
+def test_reviewer_without_letter_or_digit_exits_2(capsys, reviewer):
     assert _exit_code(["decide", CID, "--decision", "reject", "--reviewer", reviewer]) == 2
     assert "argument --reviewer: must contain a letter or digit" in capsys.readouterr().err
 
 
-def test_ac21_run_parses_path_and_substance():
+def test_run_parses_path_and_substance():
     args = build_parser().parse_args(["run", "client.zip", "--substance", "ratings.json"])
     assert (args.command, args.path, args.substance) == ("run", "client.zip", "ratings.json")
     assert build_parser().parse_args(["run", "repo"]).substance is None
 
 
-def test_ac21_decide_parses_all_fields():
+def test_decide_parses_all_fields():
     args = build_parser().parse_args(
         ["decide", CID, "--decision", "reject", "--reviewer", "José Núñez", "--note", "seeded key"]
     )
@@ -140,7 +140,7 @@ def test_main_reads_sys_argv_by_default(capsys, monkeypatch):
     assert "argument cid" in capsys.readouterr().err
 
 
-def test_ac21_assess_console_script_is_cli_main():
+def test_assess_console_script_is_cli_main():
     (script,) = entry_points(group="console_scripts", name="assess")
     assert script.value == "assessor.cli:main"
     assert script.load() is cli.main
@@ -154,6 +154,6 @@ def test_ac21_assess_console_script_is_cli_main():
         (["decide", "../x", "--decision", "continue", "--reviewer", "ana"], 2),
     ],
 )
-def test_ac21_installed_assess_process_exit_code(argv, code):
+def test_installed_assess_process_exit_code(argv, code):
     assess = Path(sys.executable).with_name("assess")
     assert subprocess.run([assess, *argv], capture_output=True, timeout=60).returncode == code

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).parents[1] / "src"
+GATEWAY = "assessor/llm.py"
 BANNED_MODULES = ("subprocess", "_posixsubprocess", "claude_agent_sdk", "pty", "asyncio.subprocess")
 OS_ALIASES = {"os", "posix", "nt"}
 BANNED_OS_CALLS = {"system", "popen", "posix_spawn", "posix_spawnp"}
@@ -130,7 +131,7 @@ def src_copy(tmp_path):
     return copy
 
 
-def test_ac14_src_has_no_process_spawning():
+def test_src_has_no_process_spawning():
     scanned = [path.relative_to(SRC).as_posix() for path in _modules(SRC)]
     assert "assessor/cli.py" in scanned
     assert _violations(SRC) == []
@@ -203,7 +204,7 @@ def test_ac14_src_has_no_process_spawning():
         ("from asyncio import subprocess as aio_subprocess", "1: asyncio.subprocess"),
     ],
 )
-def test_ac14_detects_planted_violation(src_copy, planted, expected):
+def test_detects_planted_violation(src_copy, planted, expected):
     (src_copy / "assessor" / "planted.py").write_text(planted + "\n")
     assert f"assessor/planted.py:{expected}" in _violations(src_copy)
 
@@ -218,19 +219,19 @@ def test_ac14_detects_planted_violation(src_copy, planted, expected):
         ),
     ],
 )
-def test_ac14_reports_every_violation_in_a_module(src_copy, planted, expected):
+def test_reports_every_violation_in_a_module(src_copy, planted, expected):
     (src_copy / "assessor" / "planted.py").write_text(planted)
     assert _violations(src_copy) == [f"assessor/planted.py:{line}" for line in expected]
 
 
-def test_ac14_scans_nested_packages(src_copy):
+def test_scans_nested_packages(src_copy):
     nested = src_copy / "assessor" / "tools" / "deep"
     nested.mkdir(parents=True)
     (nested / "launcher.py").write_text("import subprocess\n")
     assert _violations(src_copy) == ["assessor/tools/deep/launcher.py:1: subprocess"]
 
 
-def test_ac14_scans_symlinked_packages(src_copy, tmp_path):
+def test_scans_symlinked_packages(src_copy, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "launcher.py").write_text("import subprocess\n")
@@ -238,7 +239,7 @@ def test_ac14_scans_symlinked_packages(src_copy, tmp_path):
     assert _violations(src_copy) == ["assessor/linked/launcher.py:1: subprocess"]
 
 
-def test_ac14_ignores_lookalikes(src_copy):
+def test_ignores_lookalikes(src_copy):
     (src_copy / "assessor" / "lookalikes.py").write_text(
         '"""import subprocess; os.system("x")"""\n'
         "# import subprocess\n"
@@ -267,7 +268,62 @@ def test_ac14_ignores_lookalikes(src_copy):
     assert _violations(src_copy) == []
 
 
-def test_ac14_unparsable_module_fails_scan(src_copy):
+def _anthropic_references(root):
+    """List "path:line: name" for each anthropic reference in a module other than assessor/llm.py."""
+    found = set()
+    for path in _modules(root):
+        rel = path.relative_to(root).as_posix()
+        for line, name in _referenced_names(ast.parse(path.read_bytes(), filename=str(path))):
+            if rel != GATEWAY and (name == "anthropic" or name.startswith("anthropic.")):
+                found.add((rel, line, name))
+    return [f"{rel}:{line}: {name}" for rel, line, name in sorted(found)]
+
+
+def test_only_the_gateway_imports_anthropic():
+    gateway_names = {name for _, name in _referenced_names(ast.parse((SRC / GATEWAY).read_bytes()))}
+    assert "anthropic" in gateway_names
+    assert _anthropic_references(SRC) == []
+
+
+@pytest.mark.parametrize(
+    ("planted", "expected"),
+    [
+        ("import anthropic", "1: anthropic"),
+        ("import anthropic as sdk", "1: anthropic"),
+        ("import anthropic.types", "1: anthropic.types"),
+        ("from anthropic import Anthropic", "1: anthropic"),
+        ("from anthropic.types.beta import BetaMessage", "1: anthropic.types.beta"),
+        ("def call():\n    import anthropic", "2: anthropic"),
+        ("import importlib\nimportlib.import_module('anthropic')", "2: anthropic"),
+        ("__import__('anthropic')", "1: anthropic"),
+        ("import anthropic as sdk\nsdk.Anthropic()", "2: anthropic.Anthropic"),
+    ],
+)
+def test_detects_planted_anthropic_import(src_copy, planted, expected):
+    (src_copy / "assessor" / "planted.py").write_text(planted + "\n")
+    assert f"assessor/planted.py:{expected}" in _anthropic_references(src_copy)
+
+
+def test_only_the_top_level_gateway_is_exempt(src_copy):
+    nested = src_copy / "assessor" / "agents"
+    nested.mkdir()
+    (nested / "llm.py").write_text("import anthropic\n")
+    assert _anthropic_references(src_copy) == ["assessor/agents/llm.py:1: anthropic"]
+
+
+def test_anthropic_lookalikes_are_not_imports(src_copy):
+    (src_copy / "assessor" / "lookalikes.py").write_text(
+        '"""import anthropic"""\n'
+        "# import anthropic\n"
+        "import anthropic_tools\n"
+        "from . import anthropic\n"
+        "from .llm import call\n"
+        "label = 'anthropic'\n"
+    )
+    assert _anthropic_references(src_copy) == []
+
+
+def test_unparsable_module_fails_scan(src_copy):
     (src_copy / "assessor" / "broken.py").write_text("def broken(:\n")
     with pytest.raises(SyntaxError):
         _violations(src_copy)

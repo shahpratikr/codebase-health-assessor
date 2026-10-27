@@ -32,3 +32,10 @@ class FakeAnthropic:
 @pytest.fixture
 def fake_anthropic():
     return FakeAnthropic
+
+
+@pytest.fixture(autouse=True)
+def tmp_runs_dir(tmp_path, monkeypatch):
+    # Code that falls back to the default runs dir writes here, never into the repository's ./runs.
+    monkeypatch.setenv("ASSESSOR_RUNS_DIR", str(tmp_path / "runs"))
+    return tmp_path / "runs"

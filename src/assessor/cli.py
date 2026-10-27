@@ -1,9 +1,7 @@
 import argparse
-import re
 import sys
 
-# Correlation IDs name run directories, so the full-shape match also refuses path-like values such as ../x.
-CORRELATION_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
+from assessor.config import CORRELATION_ID
 
 
 def _correlation_id(value: str) -> str:
