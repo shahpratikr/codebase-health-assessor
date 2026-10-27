@@ -1,0 +1,13 @@
+{
+  "name": "adversarial_reviewer",
+  "role": "reviewer",
+  "model": "claude-sonnet-5-5",
+  "effort": "high",
+  "prompt": "prompts/adversarial_reviewer.md",
+  "skills": [],
+  "tools": ["read_file"],
+  "max_tool_calls": 12,
+  "output_schema": "schemas/review.schema.json",
+  "isolated_context": true,
+  "assignment": ["security_examiner", "dependency_examiner", "final_review_writer"]
+}

@@ -12,6 +12,8 @@ def test_root_is_the_repository():
     assert config.ROOT == ROOT.resolve()
     assert config.PRICING_FILE == ROOT.resolve() / "config" / "pricing.json"
     assert config.SCHEMAS_DIR == ROOT.resolve() / "schemas"
+    assert config.MANIFESTS_DIR == ROOT.resolve() / "manifests"
+    assert config.SUBSTANCE_FILE == ROOT.resolve() / "manifests" / "substance.json"
 
 
 def test_runs_dir_defaults_to_runs(monkeypatch):
@@ -52,6 +54,12 @@ def test_audit_events_are_the_planned_closed_set():
         "run_finished",
         "decision_recorded",
     )
+
+
+def test_agent_closed_sets_are_the_planned_ones():
+    assert config.AGENT_ROLES == ("coordinator", "examiner", "reviewer", "writer")
+    assert config.SUBAGENT_TOOLS == ("list_files", "read_file", "list_manifests", "read_manifest", "query_osv")
+    assert config.SUBSTANCE_RATINGS == ("core", "peripheral", "toy")
 
 
 def test_load_pricing_reads_another_file(tmp_path):

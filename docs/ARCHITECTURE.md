@@ -23,7 +23,7 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli` (argument parsing only), `config`, `audit` and `llm`. Everything else in the diagram is planned.
+Built today: `cli` (argument parsing only), `config`, `audit`, `llm` and `manifest` (not drawn; `cli` will load the manifests at run start). Everything else in the diagram is planned.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
@@ -44,16 +44,15 @@ codebase-health-assessor/
 ├── README.md                     # (planned) setup, usage, capability → path evidence map, packaging
 ├── docs/                         # PRD.md, ARCHITECTURE.md
 ├── config/pricing.json           # $/MTok per model
-├── schemas/
-│   └── audit_event.schema.json   # one audit line; (planned) manifest, substance, examination, review,
-│                                 #   writer_output, disposition, dispatch_error
+├── schemas/                      # audit_event, manifest, substance (.schema.json); (planned) examination,
+│                                 #   review, writer_output, disposition, dispatch_error
 ├── src/assessor/
-│   ├── cli.py, config.py, audit.py, llm.py
-│   ├── manifest.py, sandbox.py, guardrails.py, coordinator.py, gates.py, report.py   (planned)
+│   ├── cli.py, config.py, audit.py, llm.py, manifest.py
+│   ├── sandbox.py, guardrails.py, coordinator.py, gates.py, report.py                (planned)
 │   ├── tools/__init__.py, tools/files.py, tools/deps.py                              (planned)
 │   └── agents/runner.py                                                              (planned)
 ├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic
-├── manifests/                    # (planned) one JSON manifest per agent, substance.json
+├── manifests/                    # one JSON manifest per agent, substance.json
 ├── prompts/                      # (planned) one system prompt per agent
 ├── skills/                       # (planned) secrets_and_config_checklist.md, dependency_risk_checklist.md
 ├── evals/                        # (planned) run.py, scoring.py, scripted_dispatcher.py, judges/tone.md,
@@ -69,10 +68,10 @@ codebase-health-assessor/
 | Component | Responsibility | Depends on |
 |---|---|---|
 | `cli` | `build_parser()` defines `run` and `decide` and validates their arguments. `main(argv)` returns the exit code. Both commands are stubs today. *(planned)* Wires a run (input, credentials, run directory, coordinator, gates, report) and the decide path. | `config`; *(planned)* `coordinator`, `gates`, `report`, `sandbox`, `manifest`, `audit`, and `llm` for credentials |
-| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS` and `LLM_ERROR_CODES`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. *(planned)* Every other closed set, the caps, the OSV settings and `ASSESSOR_OSV_REPLAY`. | standard library |
+| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS` and `SUBSTANCE_RATINGS`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. *(planned)* Every other closed set, the caps, the OSV settings and `ASSESSOR_OSV_REPLAY`. | standard library |
 | `audit` | `AuditLog`: one run's append-only JSONL trail. Validates each line against `audit_event.schema.json` before writing, computes cost from pricing, generates correlation IDs (`new_correlation_id`). *(planned)* Per-agent summary totals. | `config`, `jsonschema` |
 | `llm` | The Messages API gateway. `call()` builds the request, writes one `llm_call` line per call and maps failures to `LLMError`. `make_client()` returns an SDK client or raises `NoCredentialsError`. | `anthropic`, `config`, `audit` |
-| `manifest` *(planned)* | Loads and validates the agent manifests and the substance ratings. Refuses to start when a coordinator tool is not `launch_*` or maps to no sub-agent manifest. | `manifest.schema.json`, `substance.schema.json` |
+| `manifest` | `load_manifests()` loads `coordinator.json` and the manifest each `launch_<agent>` tool names, and fails closed (`ValueError` naming the file) on the checks under Agents. `load_substance(manifests, path)` loads the shipped or a replacement ratings file the same way. An `OSError` from reading `coordinator.json`, a sub-agent manifest that exists, the substance file or the pricing file propagates as is. | `config`, `jsonschema` |
 | `sandbox` *(planned)* | `Workspace`: confines every path to the workspace root (`Path.resolve()` plus an `is_relative_to` check, so symlinks cannot escape). Extracts zip input under entry and size caps and removes a partial extraction. | — |
 | `tools` *(planned)* | `execute(agent_manifest, name, input)` refuses any tool the agent's manifest does not declare. `files`: `list_files`, `read_file`. `deps`: `list_manifests`, `read_manifest` (recognised manifest files only), `query_osv` over a live or replay transport. | `sandbox`, `config`, `httpx2` |
 | `guardrails` *(planned)* | `validate(contract, output, ctx)` returns the output or a DispatchError, after JSON Schema validation and then the semantic checks. `redact()` masks secret-like values. | `config` |
@@ -84,19 +83,38 @@ codebase-health-assessor/
 
 Which imports are allowed between these modules: see CLAUDE.md.
 
-### Agents *(planned)*
+### Agents
 
-Each agent is a JSON manifest plus a prompt, and the runner and coordinator build each request only from those.
+Each agent is a JSON manifest in `manifests/` (built) plus a prompt under `prompts/` *(planned)*. The runner and coordinator *(planned)* build each request only from those. Every agent runs on `claude-sonnet-5-5`.
 
-| Agent | Tools | Effort | Output contract |
-|---|---|---|---|
-| coordinator | the four `launch_*` tools (see Interfaces) | medium | none: it ends its turn when done |
-| security_examiner | `list_files`, `read_file` | medium | examination; steps `secrets` (`SEC`) and `insecure_config` (`CFG`) |
-| dependency_examiner | `list_manifests`, `read_manifest`, `query_osv` | medium | examination; steps `known_vulnerabilities` (`VULN`) and `dependency_hygiene` (`HYG`) |
-| adversarial_reviewer | `read_file` | high | review; `isolated_context: true`, assigned to both examiners and the writer |
-| final_review_writer | none | low | writer output |
+| Agent | Role | Tools | Effort | Output contract |
+|---|---|---|---|---|
+| coordinator | coordinator | the four `launch_*` tools (see Interfaces) | medium | none: it ends its turn when done |
+| security_examiner | examiner | `list_files`, `read_file` | medium | examination; steps `secrets` (`SEC`) and `insecure_config` (`CFG`) |
+| dependency_examiner | examiner | `list_manifests`, `read_manifest`, `query_osv` | medium | examination; steps `known_vulnerabilities` (`VULN`) and `dependency_hygiene` (`HYG`) |
+| adversarial_reviewer | reviewer | `read_file` | high | review; `isolated_context: true`, assigned to both examiners and the writer |
+| final_review_writer | writer | none | low | writer output |
 
-The examiners' system prompts are their prompt plus their skill checklist. Substance ratings (`manifests/substance.json`) rate security_examiner and dependency_examiner core and final_review_writer peripheral, each with a rationale. adversarial_reviewer is listed as not rated, with the reason.
+`schemas/manifest.schema.json` gives each role its own fields and refuses any other, so a manifest cannot declare a request parameter such as `temperature`:
+- every role: `name` (the file name), `role`, `model`, `effort`, `prompt`, `tools`
+- coordinator: `launch_*` tools, `max_turns` (30), `max_dispatches_per_step` (3)
+- sub-agents: tools from `config.SUBAGENT_TOOLS` (none for the writer), `skills`, `max_tool_calls` (12), `output_schema`
+- examiner: `steps`, each a name and an ID code
+- reviewer: `isolated_context: true`, `assignment`
+
+`manifest.load_manifests()` also refuses:
+- a `launch_<agent>` tool with no `manifests/<agent>.json`, or one that names the coordinator
+- anything but one or more examiners, exactly one reviewer and exactly one writer
+- a reviewer `assignment` other than exactly the examiners and the writer
+- a step code used twice, or a step name repeated within an examiner
+- a model with no price in `config/pricing.json`
+- duplicate JSON keys, numbers written with a decimal point or exponent (even `12.0`), NaN and Infinity, nesting too deep to parse or validate, and a trailing newline in an agent or step name, a step code, a model or a file path (a launch tool with one maps to no manifest)
+
+Beyond the closed sets (tool names, roles, efforts, ratings), caps of at least 1, priced models, a writer with no tools and a reviewer with `isolated_context: true`, it pins no per-agent value. The four launch tools, each sub-agent's tool set, the caps, the model and the efforts are declared only in the manifests and pinned by the shipped-manifest tests in `tests/test_manifest.py`.
+
+It does not check that the `prompt`, `skills` and `output_schema` files exist *(planned: `tests/test_runner.py`)*.
+
+The examiners' system prompts are their prompt plus their skill checklist *(planned)*. Substance ratings (`manifests/substance.json`) rate security_examiner and dependency_examiner core and final_review_writer peripheral, each with a rationale. adversarial_reviewer is listed as not rated, with the reason. `manifest.load_substance()` accepts a ratings file only when it rates exactly the examiners and the writer and lists exactly the reviewer as not rated.
 
 ## Runtime and dependencies
 
@@ -105,7 +123,7 @@ The examiners' system prompts are their prompt plus their skill checklist. Subst
 | Python | `>=3.14,<4.0` (poetry: `~3.14`) | chosen runtime |
 | poetry | — | dependency locking and the in-project virtualenv |
 | `anthropic` | 2.3.0 | the official SDK: `beta.messages.create` carries the fallback beta, `output_config` and typed errors |
-| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines; *(planned)* of manifests and agent outputs, from the same schema files sent as `output_config.format` |
+| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests and substance ratings; *(planned)* of agent outputs, from the same schema files sent as `output_config.format` |
 | `httpx2` | 2.16.0, through `anthropic` | the SDK's HTTP client; *(planned)* also the OSV client |
 | `httpx` | 0.28.1 | declared and locked but unused; *(planned)* removed once OSV uses `httpx2` |
 | `pytest` | 9.1.1, dev group | test runner |
@@ -165,7 +183,7 @@ A line is a JSON object in the shape `schemas/audit_event.schema.json` defines. 
 
 ### Closed sets
 
-Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dispatch_started`, `dispatch_finished`, `guardrail_rejected`, `gate_opened`, `run_finished`, `decision_recorded`) and `LLM_ERROR_CODES` (`REFUSAL`, `MAX_TOKENS`, `API_ERROR`). *(planned)*:
+Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dispatch_started`, `dispatch_finished`, `guardrail_rejected`, `gate_opened`, `run_finished`, `decision_recorded`), `LLM_ERROR_CODES` (`REFUSAL`, `MAX_TOKENS`, `API_ERROR`), `AGENT_ROLES` (coordinator, examiner, reviewer, writer), `EFFORTS` (low, medium, high, xhigh, max: the installed SDK's set), `SUBAGENT_TOOLS` (`list_files`, `read_file`, `list_manifests`, `read_manifest`, `query_osv`) and `SUBSTANCE_RATINGS` (core, peripheral, toy). The manifest and substance schemas repeat these enums, and `tests/test_manifest.py` keeps them equal. *(planned)*:
 
 - **Run status:** `finalized`, `pending_human`, `halted`; derived from decisions: `finalized_by_human`, `rejected_by_human`
 - **Gates:** `SUBSTANCE_ELEVATION`, `OPEN_CRITICAL_CHALLENGE`, `COORDINATOR_ESCALATION`
@@ -179,7 +197,6 @@ Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dis
 - **Challenge severity:** critical, major, minor
 - **Disposition decision:** accept, escalate
 - **Human decision:** continue, reject
-- **Substance rating:** core, peripheral, toy
 - **Section status:** PASS, FAIL
 - **Report titles:**
   - `SEC`: "Secrets exposure"
@@ -345,16 +362,16 @@ A criterion passes only when it meets its threshold in every run.
 | `ANTHROPIC_API_KEY` | environment | the SDK credential chain (API key, auth token or credentials provider) | built |
 | `ASSESSOR_RUNS_DIR` | environment | `runs`, relative to the working directory; an empty value counts as unset | built |
 | `ASSESSOR_OSV_REPLAY` | environment | unset, meaning live OSV | planned |
-| `MAX_TOKENS` | `config` | 16000 | built; *(planned)* default for the manifest's `max_tokens` |
+| `MAX_TOKENS` | `config` | 16000 | built; *(planned)* a manifest `max_tokens` field once `llm.call` takes one, and the manifest schema refuses it until then |
 | `SDK_MAX_RETRIES` | `config` | 2 | built |
 | `FALLBACK_BETA`, `FALLBACKS` | `config` | `server-side-fallback-2026-07-01`, `"default"` | built |
 | pricing | `config/pricing.json` | the four models listed under Data and state | built |
-| `model`, `effort`, `max_tokens`, `max_tool_calls`, `steps`, `tools`, `skills`, `prompt`, `output_schema`, `isolated_context` | each agent manifest | `claude-sonnet-5-5`; effort per the Agents table; 16000; 12 | planned |
-| `max_turns`, `max_dispatches_per_step` | coordinator manifest | 30, 3 (all writer dispatches count as one step) | planned |
+| `model`, `effort`, `prompt`, `tools`, and per role `skills`, `max_tool_calls`, `output_schema`, `steps`, `isolated_context`, `assignment` | each agent manifest | `claude-sonnet-5-5`; effort per the Agents table; `max_tool_calls` 12 | declared and loaded; *(planned)* read by the runner and coordinator |
+| `max_turns`, `max_dispatches_per_step` | coordinator manifest | 30, 3 (all writer dispatches count as one step) | declared and loaded; *(planned)* enforced by the coordinator |
 | zip caps | `config` | 5000 entries, 50 MB uncompressed | planned |
 | read caps | `config` | 400 lines per call, 256 KB per file, 500 list entries; skips `.git`, `node_modules`, `.venv`; binary files refused | planned |
 | OSV | `config` | `https://api.osv.dev/v1/query`, 10 s timeout | planned |
-| substance ratings | `manifests/substance.json`, or `--substance FILE` | the shipped ratings | planned |
+| substance ratings | `manifests/substance.json`, or `--substance FILE` | the shipped ratings | file and loader built; `--substance` planned |
 
 ## Decisions
 
@@ -366,6 +383,8 @@ A criterion passes only when it meets its threshold in every run.
 | Credentials | `make_client()` fails fast with `NoCredentialsError` | A missing key otherwise surfaces as a raw SDK `TypeError` mid-run, not an `AnthropicError` | Letting the first request fail |
 | Cost scope | Tokens and cost cover the serving attempt only | One line per call prices the model that answered; declined fallback hops are left out on purpose | Summing every hop |
 | Agent definitions | One JSON manifest per agent; requests built only from it | Scoping is declared and checkable, not buried in Python classes | Tools hard-coded per class |
+| Manifest roles | A `role` field (coordinator, examiner, reviewer, writer) selects the fields a manifest may hold; manifests name tools, and code builds their definitions | One strict schema per role, and the launch tools' `step` enum comes from the examiner manifests | One loose schema for every agent; full tool definitions in each manifest |
+| Loader scope | Load `coordinator.json` and only the manifests its `launch_*` tools name | Nothing outside the coordinator's tools can be loaded as an agent | Loading every `*.json` in `manifests/` |
 | Output contracts | One JSON Schema per contract, used for both `output_config.format` and `jsonschema`; ranges and lengths live in the semantic checks | One source of truth that stays inside the structured-outputs keyword subset (the keywords: CLAUDE.md, Constraints) | Pydantic models (a second schema source); free-text parsing |
 | Semantic checks | Deterministic checks in `guardrails` | Not left to the prompt | Prompt-only rules |
 | Steps and status | Steps are check areas with codes; the harness computes section status | PASS or FAIL follows from the findings, not from the model's wording | Status declared by the model; dispatching whole workflows only |

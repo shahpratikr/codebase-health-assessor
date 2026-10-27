@@ -1,0 +1,21 @@
+{
+  "ratings": {
+    "security_examiner": {
+      "rating": "core",
+      "rationale": "Finding leaked secrets and unsafe configuration is billable work; it covers 2 of 4 sections."
+    },
+    "dependency_examiner": {
+      "rating": "core",
+      "rationale": "Checking packages for advisories and hygiene is billable work; it covers the other 2 sections."
+    },
+    "final_review_writer": {
+      "rating": "peripheral",
+      "rationale": "It turns the examiners' accepted findings into client prose and adds no findings of its own."
+    }
+  },
+  "not_rated": {
+    "adversarial_reviewer": {
+      "reason": "Scoped by its review assignment, not one workflow: it checks the examiners' and writer's outputs."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "final_review_writer",
+  "role": "writer",
+  "model": "claude-sonnet-5-5",
+  "effort": "low",
+  "prompt": "prompts/final_review_writer.md",
+  "skills": [],
+  "tools": [],
+  "max_tool_calls": 12,
+  "output_schema": "schemas/writer_output.schema.json"
+}

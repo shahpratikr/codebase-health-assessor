@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "substance.schema.json",
+  "title": "Substance ratings",
+  "description": "manifests/substance.json or a --substance file: each workflow's rating, and why the reviewer is not.",
+  "type": "object",
+  "required": ["ratings", "not_rated"],
+  "properties": {
+    "ratings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["rating", "rationale"],
+        "properties": {
+          "rating": {"enum": ["core", "peripheral", "toy"]},
+          "rationale": {"$ref": "#/$defs/text"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "not_rated": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["reason"],
+        "properties": {"reason": {"$ref": "#/$defs/text"}},
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "text": {"type": "string", "pattern": "\\S"}
+  }
+}

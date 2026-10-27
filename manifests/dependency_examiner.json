@@ -1,0 +1,15 @@
+{
+  "name": "dependency_examiner",
+  "role": "examiner",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "prompt": "prompts/dependency_examiner.md",
+  "skills": ["skills/dependency_risk_checklist.md"],
+  "tools": ["list_manifests", "read_manifest", "query_osv"],
+  "max_tool_calls": 12,
+  "output_schema": "schemas/examination.schema.json",
+  "steps": [
+    {"name": "known_vulnerabilities", "code": "VULN"},
+    {"name": "dependency_hygiene", "code": "HYG"}
+  ]
+}

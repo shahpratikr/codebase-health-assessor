@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PRICING_FILE = ROOT / "config" / "pricing.json"
 SCHEMAS_DIR = ROOT / "schemas"
+MANIFESTS_DIR = ROOT / "manifests"
+SUBSTANCE_FILE = MANIFESTS_DIR / "substance.json"
 
 # Correlation IDs name run directories, so the full-shape match also refuses path-like values such as ../x.
 CORRELATION_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
@@ -25,6 +27,11 @@ AUDIT_EVENTS = (
 )
 
 LLM_ERROR_CODES = ("REFUSAL", "MAX_TOKENS", "API_ERROR")
+
+AGENT_ROLES = ("coordinator", "examiner", "reviewer", "writer")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+SUBAGENT_TOOLS = ("list_files", "read_file", "list_manifests", "read_manifest", "query_osv")
+SUBSTANCE_RATINGS = ("core", "peripheral", "toy")
 
 MAX_TOKENS = 16000
 SDK_MAX_RETRIES = 2

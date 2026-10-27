@@ -1,0 +1,15 @@
+{
+  "name": "coordinator",
+  "role": "coordinator",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "prompt": "prompts/coordinator.md",
+  "tools": [
+    "launch_security_examiner",
+    "launch_dependency_examiner",
+    "launch_adversarial_reviewer",
+    "launch_final_review_writer"
+  ],
+  "max_turns": 30,
+  "max_dispatches_per_step": 3
+}

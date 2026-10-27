@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manifest.schema.json",
+  "title": "Agent manifest",
+  "description": "manifests/<name>.json: what every request for one agent is built from; each role has its own fields.",
+  "type": "object",
+  "required": ["name", "role", "model", "effort", "prompt", "tools"],
+  "properties": {
+    "name": {"$ref": "#/$defs/identifier"},
+    "role": {"enum": ["coordinator", "examiner", "reviewer", "writer"]},
+    "model": {"$ref": "#/$defs/single_line", "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
+    "effort": {"enum": ["low", "medium", "high", "xhigh", "max"]},
+    "prompt": {"$ref": "#/$defs/single_line", "type": "string", "pattern": "^prompts/[a-z][a-z0-9_]*\\.md$"},
+    "tools": {"type": "array", "uniqueItems": true}
+  },
+  "allOf": [
+    {
+      "if": {"required": ["role"], "properties": {"role": {"const": "coordinator"}}},
+      "then": {"$ref": "#/$defs/coordinator"}
+    },
+    {"if": {"required": ["role"], "properties": {"role": {"const": "examiner"}}}, "then": {"$ref": "#/$defs/examiner"}},
+    {"if": {"required": ["role"], "properties": {"role": {"const": "reviewer"}}}, "then": {"$ref": "#/$defs/reviewer"}},
+    {"if": {"required": ["role"], "properties": {"role": {"const": "writer"}}}, "then": {"$ref": "#/$defs/writer"}}
+  ],
+  "$defs": {
+    "single_line": {
+      "$comment": "jsonschema matches pattern with Python re.search, whose $ also matches before a trailing newline.",
+      "not": {"pattern": "\\n"}
+    },
+    "identifier": {"$ref": "#/$defs/single_line", "type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+    "cap": {"type": "integer", "minimum": 1},
+    "subagent_tools": {"items": {"enum": ["list_files", "read_file", "list_manifests", "read_manifest", "query_osv"]}},
+    "skills": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/single_line", "type": "string", "pattern": "^skills/[a-z][a-z0-9_]*\\.md$"}
+    },
+    "output_schema": {
+      "$ref": "#/$defs/single_line",
+      "type": "string",
+      "pattern": "^schemas/[a-z][a-z0-9_]*\\.schema\\.json$"
+    },
+    "step": {
+      "type": "object",
+      "required": ["name", "code"],
+      "properties": {
+        "name": {"$ref": "#/$defs/identifier"},
+        "code": {"$ref": "#/$defs/single_line", "type": "string", "pattern": "^[A-Z]{2,8}$"}
+      },
+      "additionalProperties": false
+    },
+    "coordinator": {
+      "required": ["max_turns", "max_dispatches_per_step"],
+      "properties": {
+        "name": true,
+        "role": true,
+        "model": true,
+        "effort": true,
+        "prompt": true,
+        "tools": {"items": {"type": "string", "pattern": "^launch_[a-z][a-z0-9_]{0,63}$"}},
+        "max_turns": {"$ref": "#/$defs/cap"},
+        "max_dispatches_per_step": {"$ref": "#/$defs/cap"}
+      },
+      "additionalProperties": false
+    },
+    "examiner": {
+      "required": ["skills", "max_tool_calls", "output_schema", "steps"],
+      "properties": {
+        "name": true,
+        "role": true,
+        "model": true,
+        "effort": true,
+        "prompt": true,
+        "tools": {"$ref": "#/$defs/subagent_tools"},
+        "skills": {"$ref": "#/$defs/skills"},
+        "max_tool_calls": {"$ref": "#/$defs/cap"},
+        "output_schema": {"$ref": "#/$defs/output_schema"},
+        "steps": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/step"}}
+      },
+      "additionalProperties": false
+    },
+    "reviewer": {
+      "required": ["skills", "max_tool_calls", "output_schema", "isolated_context", "assignment"],
+      "properties": {
+        "name": true,
+        "role": true,
+        "model": true,
+        "effort": true,
+        "prompt": true,
+        "tools": {"$ref": "#/$defs/subagent_tools"},
+        "skills": {"$ref": "#/$defs/skills"},
+        "max_tool_calls": {"$ref": "#/$defs/cap"},
+        "output_schema": {"$ref": "#/$defs/output_schema"},
+        "isolated_context": {"const": true},
+        "assignment": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/identifier"}}
+      },
+      "additionalProperties": false
+    },
+    "writer": {
+      "required": ["skills", "max_tool_calls", "output_schema"],
+      "properties": {
+        "name": true,
+        "role": true,
+        "model": true,
+        "effort": true,
+        "prompt": true,
+        "tools": {"maxItems": 0},
+        "skills": {"$ref": "#/$defs/skills"},
+        "max_tool_calls": {"$ref": "#/$defs/cap"},
+        "output_schema": {"$ref": "#/$defs/output_schema"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
