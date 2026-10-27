@@ -32,6 +32,24 @@ LLM_CALL = {
     "latency_ms": 250,
     "error": None,
 }
+TOOL_CALL = {
+    "parent_step_id": f"{CID}:3",
+    "agent": "security_examiner",
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "tool": "read_file",
+    "allowed": True,
+    "is_error": False,
+}
+GUARDRAIL_REJECTED = {
+    "parent_step_id": f"{CID}:3",
+    "agent": "security_examiner",
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "code": "SCHEMA_INVALID",
+    "problems": 2,
+}
+PAYLOADS = {"llm_call": LLM_CALL, "tool_call": TOOL_CALL, "guardrail_rejected": GUARDRAIL_REJECTED}
 
 
 def _log(tmp_path, clock=lambda: NOW):
@@ -124,8 +142,7 @@ def test_default_clock_is_utc():
 
 @pytest.mark.parametrize("event", config.AUDIT_EVENTS)
 def test_every_audit_event_is_accepted(tmp_path, event):
-    fields = LLM_CALL if event == "llm_call" else {}
-    assert _log(tmp_path).append(event, **fields)["event"] == event
+    assert _log(tmp_path).append(event, **PAYLOADS.get(event, {}))["event"] == event
 
 
 @pytest.mark.parametrize(
@@ -163,12 +180,74 @@ def test_non_json_number_is_rejected_and_nothing_written(tmp_path, value):
     assert log.append("run_started")["seq"] == 1
 
 
-@pytest.mark.parametrize("event", [event for event in config.AUDIT_EVENTS if event != "llm_call"])
+@pytest.mark.parametrize("event", [event for event in config.AUDIT_EVENTS if event not in PAYLOADS])
 @pytest.mark.parametrize("field", ["content", "messages", "system", "headers", "allowed"])
 def test_events_without_a_defined_payload_refuse_any_field(tmp_path, event, field):
     with pytest.raises(jsonschema.ValidationError):
         _log(tmp_path).append(event, **{field: "x"})
     assert not (tmp_path / CID).exists()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**TOOL_CALL, "tool": None, "allowed": False, "is_error": True},
+        {**TOOL_CALL, "workflow": None, "step": None, "parent_step_id": None},
+        {**TOOL_CALL, "allowed": False, "is_error": True},
+        {**TOOL_CALL, "is_error": True},
+    ],
+)
+def test_tool_call_payload_is_accepted(tmp_path, fields):
+    assert _log(tmp_path).append("tool_call", **fields)["tool"] == fields["tool"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**TOOL_CALL, "tool": "bash"},
+        {**TOOL_CALL, "tool": "launch_security_examiner"},
+        {**TOOL_CALL, "allowed": False, "is_error": False},
+        {**TOOL_CALL, "tool": None},
+        {**TOOL_CALL, "allowed": "no"},
+        {**TOOL_CALL, "agent": "Security Examiner"},
+        {**TOOL_CALL, "parent_step_id": "../x"},
+        {**TOOL_CALL, "input": {"path": "config.py"}},
+        {**TOOL_CALL, "content": "AKIAIOSFODNN7EXAMPLE"},
+        {key: value for key, value in TOOL_CALL.items() if key != "is_error"},
+    ],
+)
+def test_tool_call_payload_refuses_bad_or_extra_fields(tmp_path, fields):
+    with pytest.raises(jsonschema.ValidationError):
+        _log(tmp_path).append("tool_call", **fields)
+    assert not (tmp_path / CID).exists()
+
+
+@pytest.mark.parametrize("code", config.DISPATCH_ERROR_CODES)
+def test_guardrail_rejected_accepts_every_dispatch_error_code(tmp_path, code):
+    assert _log(tmp_path).append("guardrail_rejected", **{**GUARDRAIL_REJECTED, "code": code})["code"] == code
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**GUARDRAIL_REJECTED, "code": "NOT_A_CODE"},
+        {**GUARDRAIL_REJECTED, "problems": -1},
+        {**GUARDRAIL_REJECTED, "problems": 1.5},
+        {**GUARDRAIL_REJECTED, "details": ["findings/0/line: 99"]},
+        {**GUARDRAIL_REJECTED, "message": "examination does not match"},
+        {key: value for key, value in GUARDRAIL_REJECTED.items() if key != "code"},
+    ],
+)
+def test_guardrail_rejected_payload_refuses_bad_or_extra_fields(tmp_path, fields):
+    with pytest.raises(jsonschema.ValidationError):
+        _log(tmp_path).append("guardrail_rejected", **fields)
+    assert not (tmp_path / CID).exists()
+
+
+def test_payload_enums_match_config():
+    definitions = SCHEMA["$defs"]
+    assert definitions["tool_call"]["properties"]["tool"]["enum"] == [*config.SUBAGENT_TOOLS, None]
+    assert definitions["guardrail_rejected"]["properties"]["code"]["enum"] == list(config.DISPATCH_ERROR_CODES)
 
 
 def test_check_validates_without_writing(tmp_path):

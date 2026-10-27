@@ -93,6 +93,50 @@ def test_strict_subset_check_detects_a_planted_violation(planted, expected):
     assert _outside_strict_subset(planted) == expected
 
 
+@pytest.mark.parametrize("name", config.SUBAGENT_TOOLS)
+def test_definition_is_the_strict_input_schema_with_a_description(name):
+    definition = tools.definition(name)
+    assert sorted(definition) == ["description", "input_schema", "name", "strict"]
+    assert (definition["name"], definition["strict"], definition["input_schema"]) == (
+        name,
+        True,
+        tools.INPUT_SCHEMAS[name],
+    )
+    assert definition["description"].strip()
+
+
+def test_descriptions_cover_exactly_the_registry():
+    assert tuple(tools.DESCRIPTIONS) == config.SUBAGENT_TOOLS
+
+
+def test_definition_of_an_unregistered_tool_is_refused():
+    with pytest.raises(KeyError):
+        tools.definition("bash")
+
+
+def test_changing_a_definition_leaves_the_registry_schema_alone(tmp_path):
+    definition = tools.definition("read_file")
+    definition["input_schema"]["properties"]["start_line"]["type"] = "string"
+    definition["input_schema"]["required"].clear()
+    assert tools.INPUT_SCHEMAS["read_file"]["properties"]["start_line"] == {"type": "integer"}
+    tool_input, workspace = {"path": "app.py", "start_line": "1"}, _workspace(tmp_path)
+    result = tools.execute(MANIFESTS["security_examiner"], "read_file", tool_input, workspace=workspace)
+    assert result.content.startswith("read_file: invalid input: ")
+
+
+@pytest.mark.parametrize(
+    ("name", "cap"),
+    [
+        ("list_files", config.LIST_MAX_ENTRIES),
+        ("read_file", config.READ_MAX_LINES),
+        ("read_file", config.READ_MAX_BYTES),
+        ("read_manifest", config.READ_MAX_LINES),
+    ],
+)
+def test_descriptions_state_the_configured_caps(name, cap):
+    assert f" {cap} " in tools.DESCRIPTIONS[name]
+
+
 def test_query_osv_input_has_no_url_or_host_field():
     assert sorted(tools.INPUT_SCHEMAS["query_osv"]["properties"]) == ["ecosystem", "name", "version"]
     assert tools.INPUT_SCHEMAS["query_osv"]["properties"]["ecosystem"]["enum"] == list(config.OSV_ECOSYSTEMS)

@@ -1,3 +1,4 @@
+import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,6 +24,36 @@ INPUT_SCHEMAS = {
     "query_osv": _object(ecosystem={"type": "string", "enum": list(config.OSV_ECOSYSTEMS)}, name=_TEXT, version=_TEXT),
 }
 _VALIDATORS = {name: jsonschema.Draft202012Validator(schema) for name, schema in INPUT_SCHEMAS.items()}
+_PAGE = (
+    f"Returns up to {config.READ_MAX_LINES} lines from start_line (1 is the first line), each as "
+    "'<line number>\\t<text>': cite these line numbers. next_start_line is the line to ask for next, or null at the "
+    "end of the file."
+)
+DESCRIPTIONS = {
+    "list_files": (
+        "List the repository's files under a directory ('.' or '' for the root), each directory's files before its "
+        f"subdirectories. Returns up to {config.LIST_MAX_ENTRIES} paths relative to the root; truncated is true when "
+        "the list was cut, and unreadable names directories that could not be opened. Skips "
+        f"{', '.join(config.SKIPPED_DIRS)}."
+    ),
+    "read_file": (
+        f"Read a text file of the repository by its path from list_files. {_PAGE} Binary files and files over "
+        f"{config.READ_MAX_BYTES} bytes are refused."
+    ),
+    "list_manifests": (
+        "List the repository's PyPI and npm dependency files, each with its path, ecosystem and kind (manifest or "
+        "lockfile)."
+    ),
+    "read_manifest": (
+        f"Read a dependency file that list_manifests returned, by its path. {_PAGE} Files over "
+        f"{config.READ_MAX_BYTES} bytes are refused."
+    ),
+    "query_osv": (
+        "Look up the known advisories for one exact version of a PyPI or npm package in OSV. Returns each advisory's "
+        "id, aliases, summary, severity and the versions that fix it; vulns is empty when none are known. An error "
+        "result means the lookup failed, not that the package is clean."
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -32,6 +63,18 @@ class ToolResult:
     content: str
     is_error: bool = False
     allowed: bool = True
+
+
+def definition(name: str) -> dict:
+    """Return the strict Messages API definition of tool name, a copy the caller may change; raises KeyError for a name
+    outside INPUT_SCHEMAS.
+    """
+    return {
+        "name": name,
+        "description": DESCRIPTIONS[name],
+        "input_schema": copy.deepcopy(INPUT_SCHEMAS[name]),
+        "strict": True,
+    }
 
 
 def execute(

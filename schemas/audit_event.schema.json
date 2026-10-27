@@ -26,7 +26,15 @@
   },
   "if": {"properties": {"event": {"const": "llm_call"}}},
   "then": {"$ref": "#/$defs/llm_call"},
-  "else": {"$ref": "#/$defs/envelope_only"},
+  "else": {
+    "if": {"properties": {"event": {"const": "tool_call"}}},
+    "then": {"$ref": "#/$defs/tool_call"},
+    "else": {
+      "if": {"properties": {"event": {"const": "guardrail_rejected"}}},
+      "then": {"$ref": "#/$defs/guardrail_rejected"},
+      "else": {"$ref": "#/$defs/envelope_only"}
+    }
+  },
   "$defs": {
     "envelope_only": {
       "properties": {"correlation_id": true, "seq": true, "step_id": true, "ts": true, "event": true},
@@ -34,6 +42,60 @@
     },
     "tokens": {"type": "integer", "minimum": 0},
     "label": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
+    "optional_label": {"anyOf": [{"$ref": "#/$defs/label"}, {"type": "null"}]},
+    "parent_step_id": {"anyOf": [{"$ref": "#/properties/step_id"}, {"type": "null"}]},
+    "tool_call": {
+      "$comment": "tool is null for a name outside the sub-agent tools, so model-written text never reaches the audit.",
+      "required": ["parent_step_id", "agent", "workflow", "step", "tool", "allowed", "is_error"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "parent_step_id": {"$ref": "#/$defs/parent_step_id"},
+        "agent": {"$ref": "#/$defs/label"},
+        "workflow": {"$ref": "#/$defs/optional_label"},
+        "step": {"$ref": "#/$defs/optional_label"},
+        "tool": {"enum": ["list_files", "read_file", "list_manifests", "read_manifest", "query_osv", null]},
+        "allowed": {"type": "boolean"},
+        "is_error": {"type": "boolean"}
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {"if": {"properties": {"tool": {"const": null}}}, "then": {"properties": {"allowed": {"const": false}}}},
+        {"if": {"properties": {"allowed": {"const": false}}}, "then": {"properties": {"is_error": {"const": true}}}}
+      ]
+    },
+    "guardrail_rejected": {
+      "required": ["parent_step_id", "agent", "workflow", "step", "code", "problems"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "parent_step_id": {"$ref": "#/$defs/parent_step_id"},
+        "agent": {"$ref": "#/$defs/label"},
+        "workflow": {"$ref": "#/$defs/optional_label"},
+        "step": {"$ref": "#/$defs/optional_label"},
+        "code": {
+          "enum": [
+            "SCHEMA_INVALID",
+            "EVIDENCE_INVALID",
+            "PRECONDITION_FAILED",
+            "UNKNOWN_TARGET",
+            "RETRY_CAP_REACHED",
+            "TOOL_LOOP_LIMIT",
+            "REFUSAL",
+            "MAX_TOKENS",
+            "API_ERROR"
+          ]
+        },
+        "problems": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
     "llm_call": {
       "required": [
         "parent_step_id",
@@ -60,10 +122,10 @@
         "step_id": true,
         "ts": true,
         "event": true,
-        "parent_step_id": {"anyOf": [{"$ref": "#/properties/step_id"}, {"type": "null"}]},
+        "parent_step_id": {"$ref": "#/$defs/parent_step_id"},
         "agent": {"$ref": "#/$defs/label"},
-        "workflow": {"anyOf": [{"$ref": "#/$defs/label"}, {"type": "null"}]},
-        "step": {"anyOf": [{"$ref": "#/$defs/label"}, {"type": "null"}]},
+        "workflow": {"$ref": "#/$defs/optional_label"},
+        "step": {"$ref": "#/$defs/optional_label"},
         "requested_model": {"$ref": "#/$defs/label"},
         "served_model": {"type": ["string", "null"]},
         "fallback_ran": {"type": "boolean"},

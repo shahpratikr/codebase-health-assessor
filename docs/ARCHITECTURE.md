@@ -23,7 +23,7 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli` (argument parsing only), `config`, `audit`, `llm`, `manifest` (not drawn; `cli` will load the manifests at run start), `sandbox`, `tools` with the OSV transport, and `guardrails` (not drawn; `agents.runner` and `coordinator` will call it). Nothing calls `sandbox`, `tools` or `guardrails` yet; `coordinator` and `agents.runner` are planned.
+Built today: `cli` (argument parsing only), `config`, `audit`, `llm`, `manifest` (not drawn; `cli` will load the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner` calls it, and `coordinator` will) and `agents.runner`. Nothing calls `agents.runner` yet; `coordinator` is planned.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
@@ -49,13 +49,13 @@ codebase-health-assessor/
 ├── src/assessor/
 │   ├── cli.py, config.py, audit.py, llm.py, manifest.py, sandbox.py, guardrails.py
 │   ├── tools/__init__.py, tools/files.py, tools/deps.py
-│   ├── coordinator.py, gates.py, report.py                                           (planned)
-│   └── agents/runner.py                                                              (planned)
+│   ├── agents/runner.py
+│   └── coordinator.py, gates.py, report.py                                           (planned)
 ├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic; fixtures/ holds an OSV
 │                                 #   replay sample
 ├── manifests/                    # one JSON manifest per agent, substance.json
-├── prompts/                      # (planned) one system prompt per agent
-├── skills/                       # (planned) secrets_and_config_checklist.md, dependency_risk_checklist.md
+├── prompts/                      # one system prompt per sub-agent; (planned) coordinator.md
+├── skills/                       # secrets_and_config_checklist.md, dependency_risk_checklist.md
 ├── evals/                        # (planned) run.py, scoring.py, scripted_dispatcher.py, judges/tone.md,
 │                                 #   <agent>/criteria.json and cases/, dependency_examiner/osv_replay.json,
 │                                 #   results/<agent>.json
@@ -74,9 +74,9 @@ codebase-health-assessor/
 | `llm` | The Messages API gateway. `call()` builds the request, writes one `llm_call` line per call and maps failures to `LLMError`. `make_client()` returns an SDK client or raises `NoCredentialsError`. | `anthropic`, `config`, `audit` |
 | `manifest` | `load_manifests()` loads `coordinator.json` and the manifest each `launch_<agent>` tool names, and fails closed (`ValueError` naming the file) on the checks under Agents. `load_substance(manifests, path)` loads the shipped or a replacement ratings file the same way. An `OSError` from reading `coordinator.json`, a sub-agent manifest that exists, the substance file or the pricing file propagates as is. | `config`, `jsonschema` |
 | `sandbox` | `Workspace`: `resolve()` confines every path to the workspace root (`Path.resolve()` plus an `is_relative_to` check, so symlinks cannot escape) and refuses NUL and characters the filesystem cannot encode (lone surrogates other than U+DC80-U+DCFF, which stand for name bytes that are not UTF-8), absolute paths and paths through `SKIPPED_DIRS` in any letter case. `read_lines()` applies the read caps, refuses binary (NUL-holding) files and reads bytes that are not UTF-8 as U+FFFD; it is the one place lines are counted. `walk()` lists files lazily, without following directory symlinks, skipping looping ones and skipping, and reporting, directories it cannot open. `check_input()` refuses a missing path, a non-zip file, an archive whose entry list cannot be read (a newer format version, a name that is not UTF-8) and an archive over the caps or with an escaping or encrypted entry, reading only the entry list and writing nothing. `open_workspace()` returns a directory in place or extracts a zip member by member into `<run_dir>/workspace/`; a member that fails only when read (an unsupported compression method, a bad CRC) fails there, and the partial workspace is removed. Input problems raise `ValueError`. | `config` |
-| `tools` | `execute(manifest, name, input, *, workspace, osv=None)` returns a `ToolResult(content, is_error, allowed)`: a tool the manifest does not declare is refused unrun with `allowed: false`, input that breaks the tool's `INPUT_SCHEMAS` entry and a tool's own failure are `is_error` results, and only a broken replay file raises. `files`: `list_files`, `read_file`. `deps`: `list_manifests`, `read_manifest` (recognised manifest files only, checked on the resolved name too), `query_osv` over a live or replay transport. | `sandbox`, `config`, `jsonschema`, `httpx2` |
+| `tools` | `definition(name)` returns a tool's strict Messages API definition: its `INPUT_SCHEMAS` entry, copied, and its `DESCRIPTIONS` entry, which states the caps from `config`. `execute(manifest, name, input, *, workspace, osv=None)` returns a `ToolResult(content, is_error, allowed)`: a tool the manifest does not declare is refused unrun with `allowed: false`, input that breaks the tool's `INPUT_SCHEMAS` entry and a tool's own failure are `is_error` results, and only a broken replay file raises. `files`: `list_files`, `read_file`. `deps`: `list_manifests`, `read_manifest` (recognised manifest files only, checked on the resolved name too), `query_osv` over a live or replay transport. | `sandbox`, `config`, `jsonschema`, `httpx2` |
 | `guardrails` | `validate(contract, output, ctx)` returns a copy of the output once it passes its contract's JSON Schema and then its semantic checks, or raises `DispatchError` (Interfaces, Output contracts). `ctx` is the contract's context: `ExaminationContext`, `ReviewContext`, `WriterContext` or `DispositionContext`. `DispatchError(code, message, details)` carries a code from `DISPATCH_ERROR_CODES` and its `retryable` flag, and `to_result()` gives the object the coordinator receives. `redact(value)` masks secret-like values in every string of a JSON value. | `config`, `sandbox`, `jsonschema` |
-| `agents.runner` *(planned)* | `run_subagent(manifest, task, ctx)` starts a fresh message list, sends only the manifest's tools, runs the tool loop up to `max_tool_calls`, and returns a validated, redacted dict or a DispatchError. | `llm`, `tools`, `guardrails`, `manifest`, `audit`, `config` |
+| `agents.runner` | `run_subagent(client, audit, manifest, task, ctx, *, workspace, workflow, step, parent_step_id, osv=None)` runs one sub-agent invocation in a conversation of its own: it sends only the manifest's tools, runs the tool loop up to `max_tool_calls`, and returns the answer once `guardrails.validate` accepts it, redacted except the references `validate` checked, or raises `DispatchError`. `examiner_task`, `review_task` and `writer_task` build the tasks (Interfaces, `agents.runner`); `checklist_section` finds a step's section of the examiner's skills. | `llm`, `tools`, `guardrails`, `audit`, `sandbox` (the `Workspace` type), `config` |
 | `coordinator` *(planned)* | The coordinator loop and its four `launch_*` handlers: ID resolution, retry cap, writer preconditions, turn cap and `RunState`. | `agents.runner`, `guardrails`, `manifest`, `llm`, `audit`, `config` |
 | `gates` *(planned)* | Opens gates once at run end, appends decisions to `decisions.jsonl` under `fcntl.flock`, and derives the effective status. | `audit`, `config` |
 | `report` *(planned)* | Assembles `report.md` from the title map, the computed statuses, the writer's prose and the review trail. | `config` |
@@ -86,7 +86,7 @@ Which imports are allowed between these modules: see CLAUDE.md.
 
 ### Agents
 
-Each agent is a JSON manifest in `manifests/` (built) plus a prompt under `prompts/` *(planned)*. The runner and coordinator *(planned)* build each request only from those. Every agent runs on `claude-sonnet-5-5`.
+Each agent is a JSON manifest in `manifests/` plus a prompt under `prompts/` (built for the four sub-agents; `prompts/coordinator.md` is planned). `agents.runner` builds each sub-agent request only from those, and the coordinator *(planned)* will build its own the same way. Every agent runs on `claude-sonnet-5-5`.
 
 | Agent | Role | Tools | Effort | Output contract |
 |---|---|---|---|---|
@@ -113,9 +113,9 @@ Each agent is a JSON manifest in `manifests/` (built) plus a prompt under `promp
 
 Beyond the closed sets (tool names, roles, efforts, ratings), caps of at least 1, priced models, a writer with no tools and a reviewer with `isolated_context: true`, it pins no per-agent value. The four launch tools, each sub-agent's tool set, the caps, the model and the efforts are declared only in the manifests and pinned by the shipped-manifest tests in `tests/test_manifest.py`.
 
-It does not check that the `prompt`, `skills` and `output_schema` files exist *(planned: `tests/test_runner.py`)*.
+It does not check that the `prompt`, `skills` and `output_schema` files exist. `tests/test_runner.py` checks that every file a sub-agent manifest names exists and that each `output_schema` names a contract; the coordinator's prompt is planned.
 
-The examiners' system prompts are their prompt plus their skill checklist *(planned)*. Substance ratings (`manifests/substance.json`) rate security_examiner and dependency_examiner core and final_review_writer peripheral, each with a rationale. adversarial_reviewer is listed as not rated, with the reason. `manifest.load_substance()` accepts a ratings file only when it rates exactly the examiners and the writer and lists exactly the reviewer as not rated.
+A sub-agent's system prompt is its prompt followed by each of its skills, separated by a blank line. Each skill checklist gives every step of its examiner one section headed `## <step>`, holding what to look for and that step's rule for each finding severity. `checklist_section` copies the section into the step's task, so the reviewer reads the same rules as part of the examination's input context. The reviewer's prompt is organised under the headings Challenge, Catch, Detect and Block, and every prompt of an agent with tools states its `max_tool_calls`. Substance ratings (`manifests/substance.json`) rate security_examiner and dependency_examiner core and final_review_writer peripheral, each with a rationale. adversarial_reviewer is listed as not rated, with the reason. `manifest.load_substance()` accepts a ratings file only when it rates exactly the examiners and the writer and lists exactly the reviewer as not rated.
 
 ## Runtime and dependencies
 
@@ -124,7 +124,7 @@ The examiners' system prompts are their prompt plus their skill checklist *(plan
 | Python | `>=3.14,<4.0` (poetry: `~3.14`) | chosen runtime |
 | poetry | — | dependency locking and the in-project virtualenv |
 | `anthropic` | 2.3.0 | the official SDK: `beta.messages.create` carries the fallback beta, `output_config` and typed errors |
-| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings, tool inputs and agent outputs; the output schemas are the same files *(planned)* sent as `output_config.format` |
+| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings, tool inputs and agent outputs; the output schemas are the same files `agents.runner` sends as `output_config.format` |
 | `httpx2` | 2.16.0, declared directly | the OSV client, and the SDK's own HTTP client |
 | `pytest` | 9.1.1, dev group | test runner |
 
@@ -137,7 +137,7 @@ The examiners' system prompts are their prompt plus their skill checklist *(plan
 | `audit.jsonl` | `AuditLog.append` | append-only; each line flushed and fsynced |
 | `run.json` *(planned)* | `cli` at run end | written once: input, started and finished times, status, gates, halt_reason |
 | `summary.json` *(planned)* | `audit` | written once: per-agent totals equal to the sums of the parseable audit lines |
-| `examinations/EX-*.json`, `reviews/RV-*.json`, `drafts/DR-*.json` *(planned)* | `agents.runner` | one file per accepted output; rejected outputs are never stored |
+| `examinations/EX-*.json`, `reviews/RV-*.json`, `drafts/DR-*.json` *(planned)* | `coordinator`, which assigns the IDs | one file per accepted output; rejected outputs are never stored |
 | `disposition.json`, `report.md` *(planned)* | `coordinator`, `report` | written once, when the run does not halt |
 | `decisions.jsonl` *(planned)* | `gates` | append-only, under `fcntl.flock` |
 | `workspace/` | `sandbox.open_workspace` *(planned: called by `cli` at run start)* | zip input only; never merged into an existing one, removed when extraction fails |
@@ -161,6 +161,13 @@ A line is a JSON object in the shape `schemas/audit_event.schema.json` defines. 
   - `cost_usd`, `pricing_missing`, `stop_reason`, `latency_ms`, `error`
 
   Labels (`agent`, `workflow`, `step`, `requested_model`, `effort`) must match `^[a-z0-9][a-z0-9_.-]{0,63}$`.
+- **`tool_call` fields** (one line per tool call a sub-agent makes, written after the tool ran or was refused; the call past the cap gets none):
+  - `parent_step_id`, `agent`, `workflow`, `step`, as on the invocation's `llm_call` lines
+  - `tool`: the name from `SUBAGENT_TOOLS`, or null for any other name, so text the model wrote never reaches the audit
+  - `allowed`: false when the agent's manifest does not declare the tool; `is_error`: whether the result was an error
+
+  A null `tool` requires `allowed: false`, and `allowed: false` requires `is_error: true`. The tool's input and result are never written.
+- **`guardrail_rejected` fields:** `parent_step_id`, `agent`, `workflow`, `step`, `code` (one of `DISPATCH_ERROR_CODES`) and `problems`, the number of entries in the error's `details`. `agents.runner` writes one when an answer is not JSON or fails `validate`, when an invocation passes its tool-call cap, and when a `tool_use` stop calls no tool (`API_ERROR`). A failed model call is recorded on its `llm_call` line instead.
 - **Other events** are envelope-only until their payload is added to the schema *(planned)*.
 - **Torn last line:** a line without its newline stays in the file as its own unparseable line. The next append starts on a new line, and readers skip unparseable lines.
 - **Failed write:** the line may still reach the file, so the log rescans before its next append. A caller that retries the append can leave the event in the file twice.
@@ -238,6 +245,14 @@ Also built, for the output contracts; the contract schemas repeat the value enum
 
    Otherwise it returns the `BetaMessage`.
 
+**One sub-agent invocation: `agents.runner.run_subagent`** (built)
+1. Reads the agent's prompt, skills and output schema, and builds each tool's definition, before any call.
+2. Starts a new message list holding one user message: the task as indented JSON.
+3. Calls `llm.call` with the manifest's model and effort, the system prompt, the tools (none for the writer) and the output schema. An `LLMError` becomes a `DispatchError` with the same code.
+4. On `tool_use`, it runs each `tool_use` block in order through `tools.execute`. A `tool_use` stop with no `tool_use` block raises `API_ERROR` after a `guardrail_rejected` line. It writes a `tool_call` line for each, appends the assistant turn unchanged and then one user message with every `tool_result` (`is_error` as the tool returned it), and calls again. Every block counts toward `max_tool_calls`, refused ones included. The block that would pass the cap is not run: the invocation stops with `TOOL_LOOP_LIMIT`.
+5. Otherwise it joins the answer's text blocks and parses them as JSON. It validates the result against the contract named by the output schema's file name (`examination.schema.json` → `examination`), redacts it and returns it. Redaction skips the references `validate` checked against the workspace or the run, which masking would break: an examination's `workflow`, `step` and each finding's `file`, a review's `target_id` and each challenge's `finding_id`, and each section's `key`. A `file` with a `..` segment is masked like any other text: `validate` resolves `x/../config.py` to `config.py` even when `x` does not exist, so the text before a `..` need not name anything in the repository. Every segment of any other accepted path names a real directory or file. A reviewer's `evidence_checked` file is not checked, so it is masked too.
+6. An answer that is not JSON is `SCHEMA_INVALID`. A failed `validate` raises its own `DispatchError`. Both, `TOOL_LOOP_LIMIT` and the `API_ERROR` of step 4 first write a `guardrail_rejected` line.
+
 **`assess run`** *(planned)*
 1. `cli` checks the input path, then calls `llm.make_client()`. A missing path or a file that is not a zip exits 2 with a message, and so does `NoCredentialsError`. In every one of these cases no run directory is created.
 2. It creates the correlation ID and the run directory, passes the client to `coordinator`, appends `run_started`, and opens a `Workspace`: the directory in place, or the zip extracted under caps.
@@ -292,9 +307,9 @@ Abbreviated options are refused. `<cid>` must match `config.CORRELATION_ID`, and
 
 `call(client, audit, *, agent, workflow, step, parent_step_id, model, effort, system, messages, tools=(), output_schema=None, timer=time.perf_counter) -> BetaMessage`. It raises `LLMError` with `.code` in `LLM_ERROR_CODES`, and `AuditLog`'s own errors for invalid labels or a failed audit write. *(planned)* A `max_tokens` argument taken from the agent's manifest.
 
-### Sub-agent tools (built; *(planned)* called by `agents.runner`)
+### Sub-agent tools (built; called by `agents.runner`)
 
-Each input schema in `tools.INPUT_SCHEMAS` uses only the structured-outputs keywords, and every field is required. Results are JSON text.
+Each input schema in `tools.INPUT_SCHEMAS` uses only the structured-outputs keywords, and every field is required. `tools.definition(name)` sends it with `strict: true` and a description. Results are JSON text.
 
 | Tool | Input | Result |
 |---|---|---|
@@ -307,6 +322,16 @@ Each input schema in `tools.INPUT_SCHEMAS` uses only the structured-outputs keyw
 Lines are split on `\n` only, with one trailing `\r` and any leading BOM dropped. Error results start with the tool name, never show the workspace's absolute path (an `OSError` gives only its reason) and escape any lone surrogate they echo as `\uXXXX`, so they are always valid UTF-8. `query_osv` POSTs only to `config.OSV_URL` and does not follow redirects. `summary` is the first non-blank of `summary` and `details`, stripped and cut to `OSV_SUMMARY_MAX_CHARS` characters. A null `vulns`, `aliases`, `severity`, `affected`, `package`, package name, `ranges`, `events` or page token counts as absent, null entries in those lists are skipped, and only a string `fixed` counts. `fixed` lists, in order and without repeats, the fix versions of every ECOSYSTEM or SEMVER range of the queried package (PyPI names compared per PEP 503, npm names exactly), including ranges that do not contain the queried version; the agent picks the next one up. GIT ranges and entries without a package are ignored. Every transport failure, any non-2xx status and an answer out of shape become `OSV query for <ecosystem>/<name>@<version> failed: <reason>`.
 
 The replay file (`ASSESSOR_OSV_REPLAY`) is a JSON object mapping `<ecosystem>/<name>@<version>` to OSV's raw response body. A query with no entry fails like an unreachable OSV, with the reason `no recorded response`.
+
+### `agents.runner` (built)
+
+- `run_subagent(client, audit, manifest, task, ctx, *, workspace, workflow, step, parent_step_id, osv=None) -> dict`. `ctx` is the output contract's guardrail context. `workflow`, `step` and `parent_step_id` label every audit line of the invocation. `osv` is passed to `tools.execute`. Strings in the result can hold lone surrogates: legitimately in the `file` of a name that is not UTF-8 (`sandbox`, under Components), or wherever the model wrote one. Write the result as ASCII-escaped JSON, or escape the surrogates before writing it as text. It raises `DispatchError` (Key flows), `validate`'s `ValueError` and `TypeError`, a broken OSV replay file's error from `tools.execute`, and any error reading the agent's files or writing the audit.
+- `examiner_task(manifest, step, *, workspace_label, challenges, note)` → `{workflow, step, workspace, checklist, challenges, note}`. `checklist` is the step's section of the examiner's skills, and `challenges` are the reviewer's challenge objects, copied unchanged. A step the manifest does not declare raises `ValueError`.
+- `review_task(target_id, target, input_context)` → `{target_id, target, input_context}`. `input_context` is the task the target was produced from: the examiner's task for an examination, or the writer's task, the moderated context, for a draft. It never holds the producing agent's conversation.
+- `writer_task(disposition, examinations, reviews, challenges)` → `{disposition, examinations, reviews, challenges}`: the accepted examinations keyed by examination ID, their latest reviews keyed by review ID (each review's `target_id` names its examination), and the challenges to the previous draft.
+- `checklist_section(manifest, step)` returns the text under `## <step>` in the manifest's skills, up to the next `## ` heading. No such section, or more than one, raises `ValueError`.
+
+Every builder copies its inputs, so later changes to the caller's objects do not reach the task.
 
 ### Coordinator tools *(planned)*
 
@@ -325,10 +350,10 @@ Results:
 
 ### Output contracts
 
-One JSON Schema per contract under `schemas/`, checked by `guardrails.validate` with `jsonschema` and *(planned)* sent as `output_config.format` (sub-agent outputs) or as part of the strict `launch_final_review_writer` input schema (disposition). Each uses only the structured-outputs keywords, and every field is required. A JSON integer must be a whole number: `2.0` and `true` are refused. `schemas/dispatch_error.schema.json` is not a contract: it describes what the coordinator receives, is never sent to the API, and so may use any Draft 2020-12 keyword.
+One JSON Schema per contract under `schemas/`, checked by `guardrails.validate` with `jsonschema`. `agents.runner` sends a sub-agent's contract as `output_config.format`; the disposition schema will be part of the strict `launch_final_review_writer` input schema *(planned)*. Each uses only the structured-outputs keywords, and every field is required. A JSON integer must be a whole number: `2.0` and `true` are refused. `schemas/dispatch_error.schema.json` is not a contract: it describes what the coordinator receives, is never sent to the API, and so may use any Draft 2020-12 keyword.
 
 - **Examination:** `{workflow, step, summary, findings: [{title, severity, category, file, line, evidence, recommendation, advisory_ids: [str]}], limitations: [str], challenge_responses: [{challenge_id, response: upheld|rejected, rationale}]}`. Every finding cites a file and line. An absence is a finding only when it has a file to cite, such as a missing lockfile cited at its manifest; with nothing to cite, such as no dependency manifest at all, it is a limitation.
-- **Review:** `{target_id, verdict, summary, challenges: [{finding_id, lens, severity, claim, evidence_checked: [{file, line}], rationale}]}`. An empty `finding_id` marks a challenge on no single finding.
+- **Review:** `{target_id, verdict, summary, challenges: [{finding_id, lens, severity, claim, evidence_checked: [{file, line}], rationale}]}`. An empty `finding_id` marks a challenge on no single finding. A draft has no findings of its own, so the reviewer prompt leaves `finding_id` empty in every challenge to a draft, and the coordinator *(planned)* passes no finding IDs in a draft's `ReviewContext`.
 - **Writer output:** `{executive_summary, sections: [{key: "<workflow>.<step>", prose}]}`
 - **Disposition:** `{steps: [{workflow, step, examination_id, decision: accept|escalate, rationale}], summary}`
 
@@ -348,7 +373,7 @@ One JSON Schema per contract under `schemas/`, checked by `guardrails.validate` 
 | | | an `examination_id` is unknown or belongs to another step | `UNKNOWN_TARGET` |
 | | | an `examination_id` has no review | `PRECONDITION_FAILED` |
 
-An accepted examination comes back with an `id` (`<code>-<n>`, in order) on each finding, so finding IDs are unique within it. Challenge, review, examination and draft IDs are assigned by *(planned)* `agents.runner` and `coordinator`, which hold the run's counters.
+An accepted examination comes back with an `id` (`<code>-<n>`, in order) on each finding, so finding IDs are unique within it. Challenge, review, examination and draft IDs are assigned by the `coordinator` *(planned)*, which holds the run's counters.
 
 **`DispatchError`** text can echo agent output, so its message and each detail are passed through `redact()`, have lone surrogates escaped as `\uXXXX`, and are cut to `DISPATCH_ERROR_TEXT_MAX_CHARS` (300) characters. `details` holds at most `DISPATCH_ERROR_MAX_DETAILS` (20) entries; past that, the last entry says how many more were not shown. A file problem gives only the `OSError` reason, never the workspace's absolute path.
 
@@ -408,7 +433,7 @@ A criterion passes only when it meets its threshold in every run.
 | `SDK_MAX_RETRIES` | `config` | 2 | built |
 | `FALLBACK_BETA`, `FALLBACKS` | `config` | `server-side-fallback-2026-07-01`, `"default"` | built |
 | pricing | `config/pricing.json` | the four models listed under Data and state | built |
-| `model`, `effort`, `prompt`, `tools`, and per role `skills`, `max_tool_calls`, `output_schema`, `steps`, `isolated_context`, `assignment` | each agent manifest | `claude-sonnet-5-5`; effort per the Agents table; `max_tool_calls` 12 | declared and loaded; *(planned)* read by the runner and coordinator |
+| `model`, `effort`, `prompt`, `tools`, and per role `skills`, `max_tool_calls`, `output_schema`, `steps`, `isolated_context`, `assignment` | each agent manifest | `claude-sonnet-5-5`; effort per the Agents table; `max_tool_calls` 12 | declared and loaded; sub-agent fields read by `agents.runner`; *(planned)* the coordinator's read by `coordinator` |
 | `max_turns`, `max_dispatches_per_step` | coordinator manifest | 30, 3 (all writer dispatches count as one step) | declared and loaded; *(planned)* enforced by the coordinator |
 | zip caps | `config` | 5000 entries (directories included), 50 MB (50,000,000 bytes) declared uncompressed | built |
 | read caps | `config` | 400 lines per call, 256 KB (256,000 bytes) per file, 500 list entries; skips `.git`, `node_modules`, `.venv` in any letter case; binary (NUL-holding) files refused | built |
@@ -446,6 +471,12 @@ A criterion passes only when it meets its threshold in every run.
 | Zip extraction | Check the entry list (count, declared size, names, encryption) before writing; extract member by member | Most refusals happen before a run directory exists; `extractall` silently rewrites unsafe names instead of refusing them; `zipfile` stops each member at its declared size, so the declared total bounds the writes | `extractall`; counting bytes while writing (`zipfile` already enforces it) |
 | Effort | Set per agent (values: Agents table) | Medium suits multistep tool use, low suits short prose, and the reviewer is correctness-critical | One effort for all |
 | Parallel tool calls | Several `launch_*` blocks in a turn run sequentially, with one result message | Simple, and it meets the API's result-message rule | Threads (nothing needs them) |
+| Sub-agent task | One JSON object in the first and only user message of a new conversation | Challenges reach the examiner unchanged and the reviewer sees only the target and its task, both checkable by parsing the message | Prose tasks (verbatim content cannot be checked); reusing a message list between invocations |
+| Tool-call cap | Every `tool_use` block counts, refused ones included; the block past the cap is not run | An agent that keeps calling undeclared tools still stops | Counting turns; counting only allowed calls |
+| Assistant turns | Appended to the conversation unchanged, `fallback` blocks included | Thinking blocks stay valid only in unedited history, and a non-streaming fallback response already leaves out the declined partial | Rebuilding turns from text |
+| Redacting accepted outputs | Every string except the references `validate` checked against the workspace or the run (user decision); a `file` with a `..` segment is masked anyway (author's narrowing, so model-written text before a `..` cannot pass unmasked) | Masking a checked file path or ID breaks the reference without hiding anything: a path that looks like an AWS secret key would no longer open | Masking everything (paths such as `src/main/java/com/acme/aws/S3UploadServi.java` came back unusable); exempting unchecked fields too |
+| Label lines in prose | The writer and reviewer prompts ask for full sentences instead of a line ending in a label and one token after a colon (user decision) | `redact`'s YAML rule masks that form, so `Secrets: [SEC-1]` would lose a citation `validate` had accepted. No check or eval criterion detects a citation lost this way yet | Exempting bracketed IDs from `redact` (changes the redaction rules under Output contracts, and a bracketed password would show) |
+| Tool name in the audit | A name from `SUBAGENT_TOOLS`, or null | The audit never holds text the model wrote | Logging any name the model called |
 | Workspace | A directory is read in place; a zip is extracted into the run directory | Copying a directory costs time and nothing needs it | Always copying |
 | Input checks at parse time | The correlation ID and reviewer name are checked by argparse | Bad input exits 2 before any run state is read | Checking later in `decide` |
 | Missing credentials | Exit 2, with no run directory | No run started, the same as a bad input path | Exit 1 as halted (it would create a run only to record that it could not start); a new exit code |
@@ -453,5 +484,5 @@ A criterion passes only when it meets its threshold in every run.
 
 ## Open questions
 
-- **Payloads for the non-`llm_call` events.** The schema allows only the envelope for `run_started`, `tool_call`, `dispatch_*`, `guardrail_rejected`, `gate_opened`, `run_finished` and `decision_recorded`. Only `tool_call`'s `allowed` field is settled. PROPOSED: each event gets a strict `$defs` payload, added with the code that first emits it.
-- **What `parent_step_id` points to.** The field exists, but nothing defines its target. PROPOSED: a sub-agent's `llm_call` and `tool_call` lines point to the coordinator's `dispatch_started` line for that invocation, and the coordinator's own calls carry `null`.
+- **Payloads for the remaining events.** `llm_call`, `tool_call` and `guardrail_rejected` have payloads; the schema allows only the envelope for `run_started`, `dispatch_*`, `gate_opened`, `run_finished` and `decision_recorded`. PROPOSED: each event gets a strict `$defs` payload, added with the code that first emits it.
+- **What `parent_step_id` points to.** `agents.runner` writes the value its caller passes on every line of an invocation, but nothing defines its target. PROPOSED: a sub-agent's `llm_call` and `tool_call` lines point to the coordinator's `dispatch_started` line for that invocation, and the coordinator's own calls carry `null`.

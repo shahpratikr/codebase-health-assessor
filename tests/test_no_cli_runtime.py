@@ -306,7 +306,7 @@ def test_detects_planted_anthropic_import(src_copy, planted, expected):
 
 def test_only_the_top_level_gateway_is_exempt(src_copy):
     nested = src_copy / "assessor" / "agents"
-    nested.mkdir()
+    nested.mkdir(exist_ok=True)
     (nested / "llm.py").write_text("import anthropic\n")
     assert _anthropic_references(src_copy) == ["assessor/agents/llm.py:1: anthropic"]
 
