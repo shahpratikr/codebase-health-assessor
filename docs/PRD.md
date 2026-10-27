@@ -64,7 +64,7 @@ Planned:
 - A run sends the client's file contents, including any secrets in them, to Anthropic's API. Redaction covers only what the tool stores and shows, not what the model reads.
 - Every run, and every eval run, spends API credit. Each call's cost is recorded. When a fallback model with no known price serves a call, its cost is recorded as unknown, so totals can be incomplete.
 - Findings come from a language model. An examiner can miss an issue or misjudge its severity. The eval suites measure how often, and a PASS section is not proof the issue is absent.
-- Some files are not read: binary files, files over the size cap, the git folder and installed-dependency folders. Archives over the entry or size cap are refused. Values: see ARCHITECTURE.md, Configuration.
+- Some files are not read: binary files, files over the size cap (large dependency lockfiles among them), the git folder and installed-dependency folders. Archives over the entry or size cap are refused. Values: see ARCHITECTURE.md, Configuration.
 - Every run is bounded: re-examinations per step, tool calls per agent and coordinator turns are capped. A run whose coordinator reaches its cap halts.
 - A run can be decided only once, and a decision cannot be changed.
 

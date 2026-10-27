@@ -1,0 +1,43 @@
+{
+  "PyPI/requests@2.19.0": {
+    "vulns": [
+      {
+        "id": "GHSA-test-0001",
+        "aliases": ["CVE-0000-0001"],
+        "summary": "Sample advisory: credentials forwarded across redirects",
+        "details": "Long advisory text that query_osv leaves out.",
+        "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"}],
+        "affected": [
+          {
+            "package": {"ecosystem": "PyPI", "name": "requests"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.20.0"}]}],
+            "versions": ["2.18.4", "2.19.0", "2.19.1"]
+          },
+          {
+            "package": {"ecosystem": "PyPI", "name": "requests-toolbelt"},
+            "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "9.9.9"}]}]
+          },
+          {
+            "package": {"ecosystem": "npm", "name": "requests"},
+            "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "8.8.8"}]}]
+          }
+        ],
+        "references": [{"type": "WEB", "url": "https://example.invalid/advisory"}]
+      },
+      {
+        "id": "PYSEC-0000-1",
+        "affected": [
+          {
+            "package": {"ecosystem": "PyPI", "name": "Requests"},
+            "ranges": [
+              {"type": "ECOSYSTEM", "events": [{"introduced": "2.0.0"}, {"fixed": "2.31.0"}]},
+              {"type": "ECOSYSTEM", "events": [{"introduced": "1.0.0"}, {"fixed": "2.20.0"}, {"fixed": "2.31.0"}]}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "npm/lodash@4.17.21": {},
+  "npm/left-pad@1.3.0": {"vulns": [], "next_page_token": "page-2"}
+}

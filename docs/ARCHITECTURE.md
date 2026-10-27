@@ -23,13 +23,13 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli` (argument parsing only), `config`, `audit`, `llm` and `manifest` (not drawn; `cli` will load the manifests at run start). Everything else in the diagram is planned.
+Built today: `cli` (argument parsing only), `config`, `audit`, `llm`, `manifest` (not drawn; `cli` will load the manifests at run start), `sandbox` and `tools` with the OSV transport. Nothing calls `sandbox` or `tools` yet; `coordinator` and `agents.runner` are planned.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
 | Anthropic Messages API, via `client.beta.messages.create` | model, system prompt, messages (including file contents the agents' tools returned), tool definitions, effort, output schema, the server-side fallback beta and mode; credentials from the SDK's credential chain | content blocks, usage (tokens and fallback iterations), the model that served the call, stop reason |
-| OSV, `https://api.osv.dev/v1/query` *(planned)* | package name, ecosystem (PyPI or npm), version | advisories |
-| Client repository *(planned)* | nothing | file contents, read in place from a directory or from a zip extracted into the run directory |
+| OSV, `https://api.osv.dev/v1/query` | package name, ecosystem (PyPI or npm), version | advisories |
+| Client repository | nothing | file contents, read in place from a directory or from a zip extracted into the run directory |
 | Runs directory | the audit trail; *(planned)* the run record, agent outputs, report and decisions | the audit trail's existing lines, read on reopen |
 
 Evals *(planned)* run the same agent code through the same gateway in their own process. They answer OSV queries from a replay file instead of the live service.
@@ -47,11 +47,12 @@ codebase-health-assessor/
 ├── schemas/                      # audit_event, manifest, substance (.schema.json); (planned) examination,
 │                                 #   review, writer_output, disposition, dispatch_error
 ├── src/assessor/
-│   ├── cli.py, config.py, audit.py, llm.py, manifest.py
-│   ├── sandbox.py, guardrails.py, coordinator.py, gates.py, report.py                (planned)
-│   ├── tools/__init__.py, tools/files.py, tools/deps.py                              (planned)
+│   ├── cli.py, config.py, audit.py, llm.py, manifest.py, sandbox.py
+│   ├── tools/__init__.py, tools/files.py, tools/deps.py
+│   ├── guardrails.py, coordinator.py, gates.py, report.py                            (planned)
 │   └── agents/runner.py                                                              (planned)
-├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic
+├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic; fixtures/ holds an OSV
+│                                 #   replay sample
 ├── manifests/                    # one JSON manifest per agent, substance.json
 ├── prompts/                      # (planned) one system prompt per agent
 ├── skills/                       # (planned) secrets_and_config_checklist.md, dependency_risk_checklist.md
@@ -68,12 +69,12 @@ codebase-health-assessor/
 | Component | Responsibility | Depends on |
 |---|---|---|
 | `cli` | `build_parser()` defines `run` and `decide` and validates their arguments. `main(argv)` returns the exit code. Both commands are stubs today. *(planned)* Wires a run (input, credentials, run directory, coordinator, gates, report) and the decide path. | `config`; *(planned)* `coordinator`, `gates`, `report`, `sandbox`, `manifest`, `audit`, and `llm` for credentials |
-| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS` and `SUBSTANCE_RATINGS`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. *(planned)* Every other closed set, the caps, the OSV settings and `ASSESSOR_OSV_REPLAY`. | standard library |
+| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS` and `SUBSTANCE_RATINGS`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. *(planned)* Every other closed set. | standard library |
 | `audit` | `AuditLog`: one run's append-only JSONL trail. Validates each line against `audit_event.schema.json` before writing, computes cost from pricing, generates correlation IDs (`new_correlation_id`). *(planned)* Per-agent summary totals. | `config`, `jsonschema` |
 | `llm` | The Messages API gateway. `call()` builds the request, writes one `llm_call` line per call and maps failures to `LLMError`. `make_client()` returns an SDK client or raises `NoCredentialsError`. | `anthropic`, `config`, `audit` |
 | `manifest` | `load_manifests()` loads `coordinator.json` and the manifest each `launch_<agent>` tool names, and fails closed (`ValueError` naming the file) on the checks under Agents. `load_substance(manifests, path)` loads the shipped or a replacement ratings file the same way. An `OSError` from reading `coordinator.json`, a sub-agent manifest that exists, the substance file or the pricing file propagates as is. | `config`, `jsonschema` |
-| `sandbox` *(planned)* | `Workspace`: confines every path to the workspace root (`Path.resolve()` plus an `is_relative_to` check, so symlinks cannot escape). Extracts zip input under entry and size caps and removes a partial extraction. | — |
-| `tools` *(planned)* | `execute(agent_manifest, name, input)` refuses any tool the agent's manifest does not declare. `files`: `list_files`, `read_file`. `deps`: `list_manifests`, `read_manifest` (recognised manifest files only), `query_osv` over a live or replay transport. | `sandbox`, `config`, `httpx2` |
+| `sandbox` | `Workspace`: `resolve()` confines every path to the workspace root (`Path.resolve()` plus an `is_relative_to` check, so symlinks cannot escape) and refuses NUL and characters the filesystem cannot encode (lone surrogates other than U+DC80-U+DCFF, which stand for name bytes that are not UTF-8), absolute paths and paths through `SKIPPED_DIRS` in any letter case. `read_lines()` applies the read caps, refuses binary (NUL-holding) files and reads bytes that are not UTF-8 as U+FFFD; it is the one place lines are counted. `walk()` lists files lazily, without following directory symlinks, skipping looping ones and skipping, and reporting, directories it cannot open. `check_input()` refuses a missing path, a non-zip file, an archive whose entry list cannot be read (a newer format version, a name that is not UTF-8) and an archive over the caps or with an escaping or encrypted entry, reading only the entry list and writing nothing. `open_workspace()` returns a directory in place or extracts a zip member by member into `<run_dir>/workspace/`; a member that fails only when read (an unsupported compression method, a bad CRC) fails there, and the partial workspace is removed. Input problems raise `ValueError`. | `config` |
+| `tools` | `execute(manifest, name, input, *, workspace, osv=None)` returns a `ToolResult(content, is_error, allowed)`: a tool the manifest does not declare is refused unrun with `allowed: false`, input that breaks the tool's `INPUT_SCHEMAS` entry and a tool's own failure are `is_error` results, and only a broken replay file raises. `files`: `list_files`, `read_file`. `deps`: `list_manifests`, `read_manifest` (recognised manifest files only, checked on the resolved name too), `query_osv` over a live or replay transport. | `sandbox`, `config`, `jsonschema`, `httpx2` |
 | `guardrails` *(planned)* | `validate(contract, output, ctx)` returns the output or a DispatchError, after JSON Schema validation and then the semantic checks. `redact()` masks secret-like values. | `config` |
 | `agents.runner` *(planned)* | `run_subagent(manifest, task, ctx)` starts a fresh message list, sends only the manifest's tools, runs the tool loop up to `max_tool_calls`, and returns a validated, redacted dict or a DispatchError. | `llm`, `tools`, `guardrails`, `manifest`, `audit`, `config` |
 | `coordinator` *(planned)* | The coordinator loop and its four `launch_*` handlers: ID resolution, retry cap, writer preconditions, turn cap and `RunState`. | `agents.runner`, `guardrails`, `manifest`, `llm`, `audit`, `config` |
@@ -123,9 +124,8 @@ The examiners' system prompts are their prompt plus their skill checklist *(plan
 | Python | `>=3.14,<4.0` (poetry: `~3.14`) | chosen runtime |
 | poetry | — | dependency locking and the in-project virtualenv |
 | `anthropic` | 2.3.0 | the official SDK: `beta.messages.create` carries the fallback beta, `output_config` and typed errors |
-| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests and substance ratings; *(planned)* of agent outputs, from the same schema files sent as `output_config.format` |
-| `httpx2` | 2.16.0, through `anthropic` | the SDK's HTTP client; *(planned)* also the OSV client |
-| `httpx` | 0.28.1 | declared and locked but unused; *(planned)* removed once OSV uses `httpx2` |
+| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings and tool inputs; *(planned)* of agent outputs, from the same schema files sent as `output_config.format` |
+| `httpx2` | 2.16.0, declared directly | the OSV client, and the SDK's own HTTP client |
 | `pytest` | 9.1.1, dev group | test runner |
 
 ## Data and state
@@ -140,7 +140,7 @@ The examiners' system prompts are their prompt plus their skill checklist *(plan
 | `examinations/EX-*.json`, `reviews/RV-*.json`, `drafts/DR-*.json` *(planned)* | `agents.runner` | one file per accepted output; rejected outputs are never stored |
 | `disposition.json`, `report.md` *(planned)* | `coordinator`, `report` | written once, when the run does not halt |
 | `decisions.jsonl` *(planned)* | `gates` | append-only, under `fcntl.flock` |
-| `workspace/` *(planned)* | `sandbox` | zip input only, extracted at run start |
+| `workspace/` | `sandbox.open_workspace` *(planned: called by `cli` at run start)* | zip input only; never merged into an existing one, removed when extraction fails |
 
 The effective status *(planned)* is derived from `run.json` plus `decisions.jsonl`.
 
@@ -183,7 +183,7 @@ A line is a JSON object in the shape `schemas/audit_event.schema.json` defines. 
 
 ### Closed sets
 
-Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dispatch_started`, `dispatch_finished`, `guardrail_rejected`, `gate_opened`, `run_finished`, `decision_recorded`), `LLM_ERROR_CODES` (`REFUSAL`, `MAX_TOKENS`, `API_ERROR`), `AGENT_ROLES` (coordinator, examiner, reviewer, writer), `EFFORTS` (low, medium, high, xhigh, max: the installed SDK's set), `SUBAGENT_TOOLS` (`list_files`, `read_file`, `list_manifests`, `read_manifest`, `query_osv`) and `SUBSTANCE_RATINGS` (core, peripheral, toy). The manifest and substance schemas repeat these enums, and `tests/test_manifest.py` keeps them equal. *(planned)*:
+Built, in `config`: `AUDIT_EVENTS` (`run_started`, `llm_call`, `tool_call`, `dispatch_started`, `dispatch_finished`, `guardrail_rejected`, `gate_opened`, `run_finished`, `decision_recorded`), `LLM_ERROR_CODES` (`REFUSAL`, `MAX_TOKENS`, `API_ERROR`), `AGENT_ROLES` (coordinator, examiner, reviewer, writer), `EFFORTS` (low, medium, high, xhigh, max: the installed SDK's set), `SUBAGENT_TOOLS` (`list_files`, `read_file`, `list_manifests`, `read_manifest`, `query_osv`) and `SUBSTANCE_RATINGS` (core, peripheral, toy). The manifest and substance schemas repeat these enums, and `tests/test_manifest.py` keeps them equal. Also built: `SKIPPED_DIRS` (`.git`, `node_modules`, `.venv`, matched in any letter case), `OSV_ECOSYSTEMS` (PyPI, npm), `OSV_VERSION_RANGES` (ECOSYSTEM, SEMVER), `DEPENDENCY_FILE_KINDS` (manifest, lockfile) and `DEPENDENCY_FILES` (listed under Configuration); `tools.INPUT_SCHEMAS` covers exactly `SUBAGENT_TOOLS` (`tests/test_tools.py`). *(planned)*:
 
 - **Run status:** `finalized`, `pending_human`, `halted`; derived from decisions: `finalized_by_human`, `rejected_by_human`
 - **Gates:** `SUBSTANCE_ELEVATION`, `OPEN_CRITICAL_CHALLENGE`, `COORDINATOR_ESCALATION`
@@ -285,6 +285,22 @@ Abbreviated options are refused. `<cid>` must match `config.CORRELATION_ID`, and
 
 `call(client, audit, *, agent, workflow, step, parent_step_id, model, effort, system, messages, tools=(), output_schema=None, timer=time.perf_counter) -> BetaMessage`. It raises `LLMError` with `.code` in `LLM_ERROR_CODES`, and `AuditLog`'s own errors for invalid labels or a failed audit write. *(planned)* A `max_tokens` argument taken from the agent's manifest.
 
+### Sub-agent tools (built; *(planned)* called by `agents.runner`)
+
+Each input schema in `tools.INPUT_SCHEMAS` uses only the structured-outputs keywords, and every field is required. Results are JSON text.
+
+| Tool | Input | Result |
+|---|---|---|
+| `list_files` | `directory` (`.` or empty for the root) | `files`: root-relative paths, each directory's files before its subdirectories; `unreadable`: directories skipped because they could not be opened; `truncated` when either list was cut at `LIST_MAX_ENTRIES` |
+| `read_file` | `path`, `start_line` (at least 1) | `path`, `start_line`, `end_line`, `total_lines`, `next_start_line` (null at the end), `content`: lines as `<n>\t<text>` |
+| `list_manifests` | none | `manifests`: `{path, ecosystem, kind}` for each recognised file; `unreadable`; `truncated` as for `list_files` |
+| `read_manifest` | `path`, `start_line` | as `read_file`, for recognised files only. A recognised file over the read cap is listed by `list_manifests` but refused here (`larger than the 256000-byte read limit`), so a large lockfile is a stated limitation (docs/PRD.md, Constraints and limitations) |
+| `query_osv` | `ecosystem` (PyPI or npm), `name`, `version` | the query; `vulns`: up to `LIST_MAX_ENTRIES` of `{id, aliases, summary, severity, fixed}`; `truncated` when OSV has another page or more advisories |
+
+Lines are split on `\n` only, with one trailing `\r` and any leading BOM dropped. Error results start with the tool name, never show the workspace's absolute path (an `OSError` gives only its reason) and escape any lone surrogate they echo as `\uXXXX`, so they are always valid UTF-8. `query_osv` POSTs only to `config.OSV_URL` and does not follow redirects. `summary` is the first non-blank of `summary` and `details`, stripped and cut to `OSV_SUMMARY_MAX_CHARS` characters. A null `vulns`, `aliases`, `severity`, `affected`, `package`, package name, `ranges`, `events` or page token counts as absent, null entries in those lists are skipped, and only a string `fixed` counts. `fixed` lists, in order and without repeats, the fix versions of every ECOSYSTEM or SEMVER range of the queried package (PyPI names compared per PEP 503, npm names exactly), including ranges that do not contain the queried version; the agent picks the next one up. GIT ranges and entries without a package are ignored. Every transport failure, any non-2xx status and an answer out of shape become `OSV query for <ecosystem>/<name>@<version> failed: <reason>`.
+
+The replay file (`ASSESSOR_OSV_REPLAY`) is a JSON object mapping `<ecosystem>/<name>@<version>` to OSV's raw response body. A query with no entry fails like an unreachable OSV, with the reason `no recorded response`.
+
 ### Coordinator tools *(planned)*
 
 All four use `strict: true` and `additionalProperties: false`.
@@ -361,16 +377,17 @@ A criterion passes only when it meets its threshold in every run.
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | environment | the SDK credential chain (API key, auth token or credentials provider) | built |
 | `ASSESSOR_RUNS_DIR` | environment | `runs`, relative to the working directory; an empty value counts as unset | built |
-| `ASSESSOR_OSV_REPLAY` | environment | unset, meaning live OSV | planned |
+| `ASSESSOR_OSV_REPLAY` | environment, read by `config.osv_replay()` | unset, meaning live OSV; an empty value counts as unset | built |
 | `MAX_TOKENS` | `config` | 16000 | built; *(planned)* a manifest `max_tokens` field once `llm.call` takes one, and the manifest schema refuses it until then |
 | `SDK_MAX_RETRIES` | `config` | 2 | built |
 | `FALLBACK_BETA`, `FALLBACKS` | `config` | `server-side-fallback-2026-07-01`, `"default"` | built |
 | pricing | `config/pricing.json` | the four models listed under Data and state | built |
 | `model`, `effort`, `prompt`, `tools`, and per role `skills`, `max_tool_calls`, `output_schema`, `steps`, `isolated_context`, `assignment` | each agent manifest | `claude-sonnet-5-5`; effort per the Agents table; `max_tool_calls` 12 | declared and loaded; *(planned)* read by the runner and coordinator |
 | `max_turns`, `max_dispatches_per_step` | coordinator manifest | 30, 3 (all writer dispatches count as one step) | declared and loaded; *(planned)* enforced by the coordinator |
-| zip caps | `config` | 5000 entries, 50 MB uncompressed | planned |
-| read caps | `config` | 400 lines per call, 256 KB per file, 500 list entries; skips `.git`, `node_modules`, `.venv`; binary files refused | planned |
-| OSV | `config` | `https://api.osv.dev/v1/query`, 10 s timeout | planned |
+| zip caps | `config` | 5000 entries (directories included), 50 MB (50,000,000 bytes) declared uncompressed | built |
+| read caps | `config` | 400 lines per call, 256 KB (256,000 bytes) per file, 500 list entries; skips `.git`, `node_modules`, `.venv` in any letter case; binary (NUL-holding) files refused | built |
+| OSV | `config` | `https://api.osv.dev/v1/query`, 10 s timeout per connect, read or write (not a total deadline); ecosystems PyPI and npm; ranges ECOSYSTEM and SEMVER; summaries up to 300 characters | built |
+| recognised dependency files | `config.DEPENDENCY_FILES` | PyPI: `requirements*.txt`, `pyproject.toml`, `Pipfile` (manifests); `Pipfile.lock`, `poetry.lock`, `uv.lock` (lockfiles). npm: `package.json` (manifest); `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` (lockfiles). Names match case-sensitively. | built |
 | substance ratings | `manifests/substance.json`, or `--substance FILE` | the shipped ratings | file and loader built; `--substance` planned |
 
 ## Decisions
@@ -394,7 +411,9 @@ A criterion passes only when it meets its threshold in every run.
 | Eval stability | Thresholds must hold in every one of 3 runs | A single run does not show stability | One run |
 | Gates and decisions | Gates evaluated once at run end; `run.json` written once; decisions in a separate append-only `decisions.jsonl` under `fcntl.flock` | Keeps every earlier record unchanged | Rewriting `run.json` on decision |
 | OSV transport | Live POST at runtime; replay from `ASSESSOR_OSV_REPLAY` when set | Reproducible evals | Live OSV in evals (results drift as advisories change) |
-| OSV HTTP client | `httpx2`, the SDK's own HTTP client; `httpx` to be removed | No HTTP library beyond what the SDK already installs | `httpx` (an extra dependency); `requests` (an extra dependency) |
+| OSV HTTP client | `httpx2`, the SDK's own HTTP client, declared directly in `pyproject.toml`; `httpx` removed | No HTTP library beyond what the SDK already installs, and a direct declaration so an SDK release cannot drop it | `httpx` (an extra dependency); `requests` (an extra dependency); `httpx2` left undeclared |
+| Tool outcomes | `tools.execute` returns a `ToolResult` for refusals and tool failures instead of raising | The runner can audit `allowed` and reply with `is_error` from one object, and the agent can recover from a bad path or an OSV outage | Raising, which every caller would have to translate |
+| Zip extraction | Check the entry list (count, declared size, names, encryption) before writing; extract member by member | Most refusals happen before a run directory exists; `extractall` silently rewrites unsafe names instead of refusing them; `zipfile` stops each member at its declared size, so the declared total bounds the writes | `extractall`; counting bytes while writing (`zipfile` already enforces it) |
 | Effort | Set per agent (values: Agents table) | Medium suits multistep tool use, low suits short prose, and the reviewer is correctness-critical | One effort for all |
 | Parallel tool calls | Several `launch_*` blocks in a turn run sequentially, with one result message | Simple, and it meets the API's result-message rule | Threads (nothing needs them) |
 | Workspace | A directory is read in place; a zip is extracted into the run directory | Copying a directory costs time and nothing needs it | Always copying |
@@ -404,6 +423,5 @@ A criterion passes only when it meets its threshold in every run.
 
 ## Open questions
 
-- **`httpx2` as a direct dependency.** OSV will use `httpx2`, which today arrives only through `anthropic`, so an SDK release could drop or change it. PROPOSED: declare `httpx2` directly in `pyproject.toml` when `httpx` is removed.
 - **Payloads for the non-`llm_call` events.** The schema allows only the envelope for `run_started`, `tool_call`, `dispatch_*`, `guardrail_rejected`, `gate_opened`, `run_finished` and `decision_recorded`. Only `tool_call`'s `allowed` field is settled. PROPOSED: each event gets a strict `$defs` payload, added with the code that first emits it.
 - **What `parent_step_id` points to.** The field exists, but nothing defines its target. PROPOSED: a sub-agent's `llm_call` and `tool_call` lines point to the coordinator's `dispatch_started` line for that invocation, and the coordinator's own calls carry `null`.

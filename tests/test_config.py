@@ -110,3 +110,55 @@ def test_load_pricing_rejects_invalid_json(tmp_path):
     path.write_text('{"m": ')
     with pytest.raises(ValueError):
         config.load_pricing(path)
+
+
+def test_workspace_and_read_caps_are_the_planned_ones():
+    assert config.WORKSPACE_DIR == "workspace"
+    assert config.ZIP_MAX_ENTRIES == 5000
+    assert config.ZIP_MAX_BYTES == 50_000_000
+    assert config.READ_MAX_LINES == 400
+    assert config.READ_MAX_BYTES == 256_000
+    assert config.LIST_MAX_ENTRIES == 500
+    assert config.SKIPPED_DIRS == (".git", "node_modules", ".venv")
+
+
+def test_osv_settings_are_the_planned_ones():
+    assert config.OSV_URL == "https://api.osv.dev/v1/query"
+    assert config.OSV_TIMEOUT_SECONDS == 10.0
+    assert config.OSV_ECOSYSTEMS == ("PyPI", "npm")
+    assert config.OSV_VERSION_RANGES == ("ECOSYSTEM", "SEMVER")
+    assert config.OSV_SUMMARY_MAX_CHARS == 300
+
+
+def test_dependency_files_are_the_confirmed_set():
+    assert config.DEPENDENCY_FILE_KINDS == ("manifest", "lockfile")
+    assert config.DEPENDENCY_FILES == (
+        ("requirements*.txt", "PyPI", "manifest"),
+        ("pyproject.toml", "PyPI", "manifest"),
+        ("Pipfile", "PyPI", "manifest"),
+        ("Pipfile.lock", "PyPI", "lockfile"),
+        ("poetry.lock", "PyPI", "lockfile"),
+        ("uv.lock", "PyPI", "lockfile"),
+        ("package.json", "npm", "manifest"),
+        ("package-lock.json", "npm", "lockfile"),
+        ("npm-shrinkwrap.json", "npm", "lockfile"),
+        ("yarn.lock", "npm", "lockfile"),
+        ("pnpm-lock.yaml", "npm", "lockfile"),
+    )
+    assert {ecosystem for _, ecosystem, _ in config.DEPENDENCY_FILES} == set(config.OSV_ECOSYSTEMS)
+    assert {kind for _, _, kind in config.DEPENDENCY_FILES} == set(config.DEPENDENCY_FILE_KINDS)
+
+
+def test_osv_replay_defaults_to_live(monkeypatch):
+    monkeypatch.delenv("ASSESSOR_OSV_REPLAY", raising=False)
+    assert config.osv_replay() is None
+
+
+def test_osv_replay_reads_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASSESSOR_OSV_REPLAY", str(tmp_path / "replay.json"))
+    assert config.osv_replay() == tmp_path / "replay.json"
+
+
+def test_empty_osv_replay_env_counts_as_unset(monkeypatch):
+    monkeypatch.setenv("ASSESSOR_OSV_REPLAY", "")
+    assert config.osv_replay() is None

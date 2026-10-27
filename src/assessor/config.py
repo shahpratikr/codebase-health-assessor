@@ -39,9 +39,45 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 FALLBACKS = "default"
 PRICE_FIELDS = ("input", "output", "cache_write", "cache_read")
 
+WORKSPACE_DIR = "workspace"
+ZIP_MAX_ENTRIES = 5000
+ZIP_MAX_BYTES = 50_000_000
+READ_MAX_LINES = 400
+READ_MAX_BYTES = 256_000
+LIST_MAX_ENTRIES = 500
+SKIPPED_DIRS = (".git", "node_modules", ".venv")
+
+OSV_URL = "https://api.osv.dev/v1/query"
+OSV_TIMEOUT_SECONDS = 10.0
+OSV_ECOSYSTEMS = ("PyPI", "npm")
+# OSV's third range type, GIT, records fixes as commit hashes, which are no version to upgrade to.
+OSV_VERSION_RANGES = ("ECOSYSTEM", "SEMVER")
+OSV_SUMMARY_MAX_CHARS = 300
+DEPENDENCY_FILE_KINDS = ("manifest", "lockfile")
+# (file-name glob, ecosystem, kind): the only files list_manifests and read_manifest see.
+DEPENDENCY_FILES = (
+    ("requirements*.txt", "PyPI", "manifest"),
+    ("pyproject.toml", "PyPI", "manifest"),
+    ("Pipfile", "PyPI", "manifest"),
+    ("Pipfile.lock", "PyPI", "lockfile"),
+    ("poetry.lock", "PyPI", "lockfile"),
+    ("uv.lock", "PyPI", "lockfile"),
+    ("package.json", "npm", "manifest"),
+    ("package-lock.json", "npm", "lockfile"),
+    ("npm-shrinkwrap.json", "npm", "lockfile"),
+    ("yarn.lock", "npm", "lockfile"),
+    ("pnpm-lock.yaml", "npm", "lockfile"),
+)
+
 
 def runs_dir() -> Path:
     return Path(os.environ.get("ASSESSOR_RUNS_DIR") or "runs")
+
+
+def osv_replay() -> Path | None:
+    """Return the OSV replay file named by ASSESSOR_OSV_REPLAY, or None (query live OSV) when unset or empty."""
+    value = os.environ.get("ASSESSOR_OSV_REPLAY")
+    return Path(value) if value else None
 
 
 def load_pricing(path: Path = PRICING_FILE) -> dict[str, dict[str, float]]:
