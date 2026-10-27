@@ -1,0 +1,33 @@
+[project]
+name = "codebase-health-assessor"
+version = "0.1.0"
+description = "Assess the health of a client code repository with a dispatch-only LLM coordinator"
+authors = [
+    {name = "Pratik Shah",email = "pratik.shah@improving.com"}
+]
+readme = "README.md"
+requires-python = ">=3.14,<4.0"
+dependencies = [
+    "anthropic (>=2.3.0,<3.0.0)",
+    "jsonschema (>=4.26.0,<5.0.0)",
+    "httpx (>=0.28.1,<0.29.0)"
+]
+
+[project.scripts]
+assess = "assessor.cli:main"
+
+[tool.poetry]
+packages = [{include = "assessor", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "~3.14"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "~9.1.1"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

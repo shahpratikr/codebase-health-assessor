@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+!/evals/*/cases/*/repo/**/.env
+!/examples/sample-client-repo/**/.env
+/runs/
+/evals/.runs/
+/dist/
+submission.zip
