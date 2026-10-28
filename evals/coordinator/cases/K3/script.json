@@ -1,0 +1,33 @@
+{
+  "id": "K3",
+  "description": "The first secrets examination is refused by the guardrails as malformed; the same launch sent again is clean.",
+  "workspace": "acme-shop",
+  "answers": [
+    {
+      "agent": "security_examiner",
+      "step": "secrets",
+      "attempts": [
+        {
+          "refused": "SCHEMA_INVALID",
+          "output": {
+            "findings": [],
+            "limitations": [],
+            "challenge_responses": []
+          }
+        },
+        {
+          "output": {
+            "summary": "Nothing to report.",
+            "findings": [],
+            "limitations": [],
+            "challenge_responses": []
+          }
+        }
+      ]
+    }
+  ],
+  "criteria": [
+    "review_coverage",
+    "escalation_correct"
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "id": "K2",
+  "description": "The first secrets examination reports a hard-coded key on a line that reads the environment and the reviewer blocks it; the examination run again is clean and passes.",
+  "workspace": "acme-shop",
+  "files": {
+    "app.py": "import os\n\nSECRET_KEY = os.environ[\"SECRET_KEY\"]\nDEBUG = False\n"
+  },
+  "answers": [
+    {
+      "agent": "security_examiner",
+      "step": "secrets",
+      "attempts": [
+        {
+          "output": {
+            "summary": "One hard-coded key.",
+            "findings": [
+              {
+                "title": "Hard-coded secret key",
+                "severity": "critical",
+                "category": "secret",
+                "file": "app.py",
+                "line": 3,
+                "evidence": "Line 3 assigns SECRET_KEY a literal value.",
+                "recommendation": "Move the key to the environment.",
+                "advisory_ids": []
+              }
+            ],
+            "limitations": [],
+            "challenge_responses": []
+          }
+        },
+        {
+          "output": {
+            "summary": "The key is read from the environment.",
+            "findings": [],
+            "limitations": [],
+            "challenge_responses": []
+          }
+        }
+      ]
+    },
+    {
+      "agent": "adversarial_reviewer",
+      "step": "secrets",
+      "attempts": [
+        {
+          "output": {
+            "verdict": "block",
+            "summary": "The only finding misreads line 3.",
+            "challenges": [
+              {
+                "finding_id": "SEC-1",
+                "lens": "challenge",
+                "severity": "critical",
+                "claim": "Line 3 reads SECRET_KEY from the environment, so no key is committed.",
+                "evidence_checked": [
+                  {
+                    "file": "app.py",
+                    "line": 3
+                  }
+                ],
+                "rationale": "The assignment calls os.environ and holds no literal."
+              }
+            ]
+          }
+        },
+        {
+          "output": {
+            "verdict": "pass",
+            "summary": "The corrected examination matches the file.",
+            "challenges": []
+          }
+        }
+      ]
+    }
+  ],
+  "criteria": [
+    "review_coverage",
+    "targeted_redispatch"
+  ]
+}

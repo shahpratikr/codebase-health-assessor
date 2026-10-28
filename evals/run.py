@@ -1,4 +1,5 @@
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -14,7 +15,7 @@ from types import SimpleNamespace
 
 import jsonschema
 
-from assessor import audit, config, llm, manifest
+from assessor import audit, config, coordinator, llm, manifest
 from assessor.agents import runner
 from assessor.guardrails import (
     DispatchError,
@@ -27,10 +28,11 @@ from assessor.guardrails import (
 from assessor.llm import NoCredentialsError, make_client
 from assessor.sandbox import Workspace
 from assessor.tools import deps
-from evals import scoring
+from evals import scoring, scripted_dispatcher
 
 EVALS_DIR = config.ROOT / "evals"
 CRITERIA_FILE, CASES_DIR, CASE_FILE, REPO_DIR = "criteria.json", "cases", "case.json", "repo"
+SCRIPT_FILE = "script.json"
 REPLAY_FILE = "osv_replay.json"
 RESULTS_DIR, AUDIT_DIR = "results", ".runs"
 MIN_CRITERIA = 3
@@ -93,6 +95,45 @@ _CASE = jsonschema.Draft202012Validator(
             "criteria": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _TEXT},
         },
         "required": ["id", "description", "steps", "expected", "criteria"],
+        "additionalProperties": False,
+    }
+)
+_SCRIPT = jsonschema.Draft202012Validator(
+    {
+        "type": "object",
+        "properties": {
+            "id": _TEXT,
+            "description": _TEXT,
+            "workspace": _TEXT,
+            "files": {"type": "object", "propertyNames": {"minLength": 1}, "additionalProperties": {"type": "string"}},
+            "answers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": _TEXT,
+                        "step": _TEXT,
+                        "attempts": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "output": {"type": "object"},
+                                    "refused": {"enum": list(config.DISPATCH_ERROR_CODES)},
+                                },
+                                "required": ["output"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["agent", "attempts"],
+                    "additionalProperties": False,
+                },
+            },
+            "criteria": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _TEXT},
+        },
+        "required": ["id", "description", "workspace", "criteria"],
         "additionalProperties": False,
     }
 )
@@ -258,8 +299,8 @@ _REPLAY = jsonschema.Draft202012Validator(
 @dataclass(frozen=True)
 class EvalSet:
     """One agent's manifest, its criteria in file order and its cases in ID order, each with its repository path (a
-    writer's case has its directory instead) and, for an agent that queries OSV, its replay file and the advisory
-    identifiers recorded in it.
+    writer's case has its directory instead, a coordinator's the manifests it runs on) and, for an agent that queries
+    OSV, its replay file and the advisory identifiers recorded in it.
     """
 
     agent: str
@@ -422,11 +463,55 @@ def _write(client: object, log: audit.AuditLog, agent_manifest: Mapping, case: M
         return {"draft": draft}, error.code
 
 
+class _Trace:
+    """Client wrapper that records, in order, each launch the coordinator makes with the result that the next request
+    carries back to it, or None when no request did.
+
+    The audit holds no tool inputs, so the launches can be seen only in the responses and in the requests that follow.
+    """
+
+    def __init__(self, client: object) -> None:
+        self.launches: list[dict] = []
+        self._client = client
+        self._waiting: dict[str, dict] = {}
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+    def _create(self, **request: object) -> object:
+        carried = request["messages"][-1]["content"]
+        for item in carried if isinstance(carried, list) else []:
+            if item.get("type") == "tool_result" and item["tool_use_id"] in self._waiting:
+                self._waiting.pop(item["tool_use_id"])["result"] = json.loads(item["content"])
+        response = self._client.beta.messages.create(**request)
+        for block in response.content:
+            if block.type == "tool_use":
+                launch = {"tool": block.name, "input": copy.deepcopy(block.input), "result": None}
+                self.launches.append(launch)
+                self._waiting[block.id] = launch
+        return response
+
+
+def _coordinate(client: object, log: audit.AuditLog, agent_manifest: Mapping, case: Mapping) -> tuple[dict, str | None]:
+    """Return the launches the coordinator made, and the halt reason that ended the case run, or None.
+
+    The sub-agents are the case's script, answered without a model call; the coordinator, its dispatcher and the
+    guardrails are the real ones.
+    """
+    traced = _Trace(client)
+    stand_in = scripted_dispatcher.ScriptedDispatcher(case)
+    with scripted_dispatcher.workspace_of(case.get("files", {})) as workspace:
+        with scripted_dispatcher.replacing_subagents(stand_in):
+            state = coordinator.run(
+                traced, log, case["manifests"], workspace=workspace, workspace_label=case["workspace"]
+            )
+    return {"launches": traced.launches}, state.halt_reason
+
+
 AGENTS: dict[str, Callable[[object, audit.AuditLog, Mapping, Mapping], tuple[dict, str | None]]] = {
     "security_examiner": _examine,
     "dependency_examiner": _examine,
     "adversarial_reviewer": _review,
     WRITER: _write,
+    "coordinator": _coordinate,
 }
 
 
@@ -750,11 +835,47 @@ def _load_write_case(directory: Path, criteria: set[str]) -> dict:
     return {**case, "directory": directory}
 
 
+def _blocks_first(answer: Mapping) -> bool:
+    """Return whether the first attempt of answer that is not marked refused is a blocking review."""
+    landed = next((attempt for attempt in answer["attempts"] if "refused" not in attempt), None)
+    return landed is not None and landed["output"].get("verdict") == "block"
+
+
+def _load_script_case(directory: Path, manifests: Mapping[str, Mapping], criteria: set[str]) -> dict:
+    source = directory / SCRIPT_FILE
+    script = _read(source, _SCRIPT)
+    if script["id"] != directory.name:
+        raise ValueError(f"{source}: id {script['id']!r} must match the directory name {directory.name!r}")
+    if unlisted := [name for name in script["criteria"] if name not in criteria]:
+        raise ValueError(f"{source}: criterion {unlisted[0]!r} is not in criteria.json")
+    try:
+        scripted_dispatcher.check_script(script, manifests)
+    except ValueError as error:
+        raise ValueError(f"{source}: {error}") from error
+    answers = script.get("answers", [])
+    needs = {
+        "targeted_redispatch": (
+            any(_blocks_first(answer) for answer in answers),
+            "needs a script with a blocking review",
+        ),
+        "escalation_correct": (
+            any(_blocks_first(answer) for answer in answers if "step" in answer)
+            or any("refused" in answer["attempts"][0] for answer in answers),
+            "needs a script with a refused attempt or a blocking review of a step",
+        ),
+    }
+    for name in script["criteria"]:
+        if name in needs and not needs[name][0]:
+            raise ValueError(f"{source}: {name} {needs[name][1]}")
+    return {**script, "manifests": manifests}
+
+
 def load_eval_set(agent: str, manifests: Mapping[str, Mapping], evals_dir: Path = EVALS_DIR) -> EvalSet:
     """Return the criteria and cases under evals_dir/<agent>, checked against the agent's manifest and each other
     before any model call: every case's expected line exists and holds its text, every expected vulnerable pin names a
     package that the agent's osv_replay.json records advisories for, a reviewer's target and a writer's input are ones
-    the harness could have produced, and every criterion has a case.
+    the harness could have produced, a coordinator's script holds only answers the guardrails accept (or refuse, as
+    marked), and every criterion has a case.
 
     Raises ValueError naming the path that breaks a rule; an OSError reading a file or listing the cases propagates.
     """
@@ -772,6 +893,8 @@ def load_eval_set(agent: str, manifests: Mapping[str, Mapping], evals_dir: Path 
         cases = [_load_review_case(directory, manifests, agent, named) for directory in directories]
     elif role == "writer":
         cases = [_load_write_case(directory, named) for directory in directories]
+    elif role == "coordinator":
+        cases = [_load_script_case(directory, manifests, named) for directory in directories]
     else:
         cases = [_load_case(directory, manifests[agent], named, osv) for directory in directories]
     listed = {name for case in cases for name in case["criteria"]}
@@ -787,12 +910,12 @@ def run_eval_set(
     under runs_dir; the prompt, the skills and the agent's judge prompt, if it has one, are hashed before the first
     call.
 
-    A DispatchError ends only its case run, which records the code and scores its criteria at their worst; any other
-    error from the agent's code propagates.
+    A DispatchError, or a coordinator's halt, ends only its case run, which records the code or halt reason and scores
+    its criteria at their worst; any other error from the agent's code propagates.
     """
     prompt_sha256 = hashlib.sha256((config.ROOT / eval_set.manifest["prompt"]).read_bytes()).hexdigest()
     skills = hashlib.sha256()
-    for path in eval_set.manifest["skills"]:
+    for path in eval_set.manifest.get("skills", []):
         skills.update((config.ROOT / path).read_bytes())
     judge = JUDGES.get(eval_set.agent)
     judge_sha256 = hashlib.sha256((config.ROOT / judge["prompt"]).read_bytes()).hexdigest() if judge else None

@@ -19,7 +19,7 @@ from assessor import audit, config, coordinator, guardrails, llm, manifest, sand
 from assessor.agents import runner
 from assessor.llm import NoCredentialsError
 from assessor.tools import deps
-from evals import run, scoring
+from evals import run, scoring, scripted_dispatcher
 
 NOW = datetime(2026, 10, 28, 9, 30, tzinfo=UTC)
 MANIFESTS = manifest.load_manifests()
@@ -917,7 +917,13 @@ def _oracle(eval_set, runs=1, broken=(), workflow="security_examiner", failures=
 
 def _shipped_copy(tmp_path):
     root = tmp_path / "evals"
-    for agent in ("security_examiner", "dependency_examiner", "adversarial_reviewer", "final_review_writer"):
+    for agent in (
+        "security_examiner",
+        "dependency_examiner",
+        "adversarial_reviewer",
+        "final_review_writer",
+        "coordinator",
+    ):
         shutil.copytree(run.EVALS_DIR / agent, root / agent)
     return root
 
@@ -1145,6 +1151,7 @@ def _every_agent_oracle():
         *_dependency_oracle(_load_dependency()),
         *_review_oracle(_load_reviewer()),
         *_write_oracle(_load_writer()),
+        *_coordinator_oracle(),
     ]
 
 
@@ -1156,6 +1163,7 @@ def test_all_runs_every_registered_agent(evaluate):
         "dependency_examiner",
         "adversarial_reviewer",
         "final_review_writer",
+        "coordinator",
     }
 
 
@@ -1178,6 +1186,7 @@ def test_a_missed_threshold_of_any_agent_fails_an_all_run(evaluate, monkeypatch,
         *_dependency_oracle(_load_dependency()),
         *_review_oracle(_load_reviewer()),
         *_write_oracle(_load_writer()),
+        *_coordinator_oracle(),
         *_oracle(eval_set, workflow="second_examiner"),
     ]
     code, _, _ = evaluate(script, agent="all", root=root)
@@ -1188,6 +1197,7 @@ def test_a_missed_threshold_of_any_agent_fails_an_all_run(evaluate, monkeypatch,
         "dependency_examiner",
         "adversarial_reviewer",
         "final_review_writer",
+        "coordinator",
         "second_examiner",
     }
 
@@ -4275,3 +4285,1225 @@ def test_a_draft_that_names_a_defects_file_in_a_range_as_wide_as_the_cap_allows_
     _edit_case(root, "adversarial_reviewer", "R4", lambda c: c["target"]["sections"][0].update(
         prose=c["target"]["sections"][0]["prose"].replace("ci.yml, line 14", "ci.yml, lines 4-14")))
     assert [case["id"] for case in _load_reviewer(root).cases] == ["R1", "R2", "R3", "R4", "R5"]
+
+
+COORDINATOR_DIR = run.EVALS_DIR / "coordinator"
+TRACE_CODES = {"secrets": "SEC", "insecure_config": "CFG", "known_vulnerabilities": "VULN", "dependency_hygiene": "HYG"}
+TRACE_WORKFLOWS = {
+    "secrets": "security_examiner",
+    "insecure_config": "security_examiner",
+    "known_vulnerabilities": "dependency_examiner",
+    "dependency_hygiene": "dependency_examiner",
+}
+REVIEW_TOOL, WRITE_TOOL = "launch_adversarial_reviewer", "launch_final_review_writer"
+COORDINATOR_THRESHOLDS = {
+    "review_coverage": (1.0, "at_least"),
+    "targeted_redispatch": (0.8, "at_least"),
+    "no_unneeded_redispatch": (0.8, "at_least"),
+    "escalation_correct": (0.8, "at_least"),
+}
+COORDINATOR_CRITERIA_BY_CASE = {
+    "K1": ["review_coverage", "no_unneeded_redispatch"],
+    "K2": ["review_coverage", "targeted_redispatch"],
+    "K3": ["review_coverage", "escalation_correct"],
+    "K4": ["review_coverage", "targeted_redispatch", "escalation_correct"],
+    "K5": ["review_coverage", "targeted_redispatch"],
+}
+
+
+def _launched(tool, tool_input, result):
+    return {"tool": tool, "input": tool_input, "result": result}
+
+
+def _trace_examine(step, version=1, ids=()):
+    code = TRACE_CODES[step]
+    identity = {"examination_id": f"EX-{code}-v{version}", "step": step, "version": version}
+    result = {**identity, "status": "PASS", "findings": []}
+    tool_input = {"step": step, "challenge_ids": list(ids), "note": ""}
+    return _launched(f"launch_{TRACE_WORKFLOWS[step]}", tool_input, result)
+
+
+def _trace_review(target, verdict="pass", number=1, challenges=None):
+    count = (1 if verdict != "pass" else 0) if challenges is None else challenges
+    severity = "critical" if verdict == "block" else "major"
+    items = [{"id": f"RV-{number}-C{k}", "severity": severity} for k in range(1, count + 1)]
+    result = {"review_id": f"RV-{number}", "target_id": target, "verdict": verdict, "challenges": items}
+    return _launched(REVIEW_TOOL, {"target_id": target}, result)
+
+
+def _trace_refused_examination(code, step="secrets", ids=()):
+    tool_input = {"step": step, "challenge_ids": list(ids), "note": ""}
+    return _trace_refused(f"launch_{TRACE_WORKFLOWS[step]}", tool_input, code)
+
+
+def _trace_write(decisions, version=1, ids=()):
+    steps = [
+        {
+            "workflow": TRACE_WORKFLOWS[step],
+            "step": step,
+            "examination_id": examination,
+            "decision": decision,
+            "rationale": "The review stands.",
+        }
+        for step, (examination, decision) in decisions.items()
+    ]
+    tool_input = {"disposition": {"steps": steps, "summary": "Done."}, "challenge_ids": list(ids)}
+    return _launched(WRITE_TOOL, tool_input, {"draft_id": f"DR-v{version}", "sections": len(steps)})
+
+
+def _trace_refused(tool, tool_input, code):
+    error = {"code": code, "message": "Refused.", "retryable": code in config.RETRYABLE_DISPATCH_ERRORS, "details": []}
+    return _launched(tool, tool_input, {"error": error})
+
+
+def _accept_all(**latest):
+    return {step: (latest.get(step, f"EX-{code}-v1"), "accept") for step, code in TRACE_CODES.items()}
+
+
+def _clean_run():
+    """Return the trace of a coordinator that examines, reviews, writes and reviews the draft, once each."""
+    steps = list(TRACE_CODES)
+    return [
+        *[_trace_examine(step) for step in steps],
+        *[_trace_review(f"EX-{TRACE_CODES[step]}-v1", "pass", number) for number, step in enumerate(steps, 1)],
+        _trace_write(_accept_all()),
+        _trace_review("DR-v1", "pass", 5),
+    ]
+
+
+def _blocked_secrets(ids=("RV-1-C1",), second="pass", others=("pass",) * 3):
+    """Return the trace of a coordinator whose secrets examination is blocked and re-examined with ids."""
+    steps = [step for step in TRACE_CODES if step != "secrets"]
+    return [
+        *[_trace_examine(step) for step in TRACE_CODES],
+        _trace_review("EX-SEC-v1", "block", 1),
+        *[
+            _trace_review(f"EX-{TRACE_CODES[step]}-v1", verdict, number)
+            for number, (step, verdict) in enumerate(zip(steps, others), 2)
+        ],
+        _trace_examine("secrets", 2, ids),
+        _trace_review("EX-SEC-v2", second, 5),
+    ]
+
+
+def _score(name, launches):
+    return getattr(scoring, name)({}, {"launches": launches})
+
+
+def test_a_run_that_reviewed_every_output_and_wrote_a_draft_has_full_review_coverage():
+    assert _score("review_coverage", _clean_run()) == 1.0
+
+
+def test_a_launch_refused_for_a_missing_review_costs_the_coverage_even_when_the_run_recovered():
+    run_ = _clean_run()
+    early = _trace_refused(WRITE_TOOL, {"disposition": {}, "challenge_ids": []}, "PRECONDITION_FAILED")
+    assert _score("review_coverage", [*run_[:4], early, *run_[4:]]) == 0.0
+
+
+def test_a_second_draft_that_nobody_reviewed_has_no_coverage():
+    assert _score("review_coverage", [*_clean_run(), _trace_write(_accept_all(), 2)]) == 0.0
+
+
+def test_a_run_with_no_draft_has_no_coverage():
+    assert _score("review_coverage", _clean_run()[:8]) == 0.0
+
+
+def test_a_run_with_no_launch_has_no_coverage():
+    assert _score("review_coverage", []) == 0.0
+
+
+def test_a_draft_that_nobody_reviewed_has_no_coverage():
+    assert _score("review_coverage", _clean_run()[:-1]) == 0.0
+
+
+def test_a_re_examination_that_nobody_reviewed_has_no_coverage():
+    run_ = _clean_run()
+    assert _score("review_coverage", [*run_[:8], _trace_examine("secrets", 2), *run_[8:]]) == 0.0
+
+
+def test_only_the_latest_examination_of_a_step_needs_its_review():
+    run_ = _clean_run()
+    del run_[4]
+    again = [_trace_examine("secrets", 2), _trace_review("EX-SEC-v2", "pass", 6)]
+    assert _score("review_coverage", [*run_[:7], *again, *run_[7:]]) == 1.0
+
+
+def test_a_refused_examination_does_not_count_as_an_unreviewed_one():
+    run_ = _clean_run()
+    refused = _trace_refused_examination("MAX_TOKENS")
+    assert _score("review_coverage", [*run_[:4], refused, *run_[4:]]) == 1.0
+
+
+def test_a_launch_with_no_result_is_not_an_accepted_output():
+    run_ = _clean_run()
+    assert _score("review_coverage", [*run_[:-1], _launched(REVIEW_TOOL, {"target_id": "DR-v1"}, None)]) == 0.0
+
+
+def test_a_clean_run_has_no_unneeded_redispatch():
+    assert _score("no_unneeded_redispatch", _clean_run()) == 1.0
+
+
+def test_a_run_with_no_launch_has_no_unneeded_redispatch():
+    assert _score("no_unneeded_redispatch", []) == 1.0
+
+
+def test_examining_a_step_again_after_its_review_passed_is_one_unneeded_launch_of_eleven():
+    run_ = _clean_run()
+    again = [*run_[:8], _trace_examine("secrets", 2), *run_[8:]]
+    assert _score("no_unneeded_redispatch", again) == pytest.approx(10 / 11)
+
+
+def test_writing_again_after_the_draft_review_passed_is_unneeded():
+    run_ = _clean_run()
+    assert _score("no_unneeded_redispatch", [*run_, _trace_write(_accept_all(), 2)]) == pytest.approx(10 / 11)
+
+
+def test_reviewing_a_target_that_already_has_a_review_is_unneeded():
+    run_ = _clean_run()
+    assert _score("no_unneeded_redispatch", [*run_, _trace_review("EX-SEC-v1", "pass", 6)]) == pytest.approx(10 / 11)
+
+
+def test_an_unneeded_launch_counts_even_when_it_was_refused():
+    run_ = _clean_run()
+    refused = _trace_refused_examination("RETRY_CAP_REACHED")
+    assert _score("no_unneeded_redispatch", [*run_, refused]) == pytest.approx(10 / 11)
+
+
+def test_three_unneeded_launches_in_thirteen_leave_a_share_under_the_threshold():
+    run_ = _clean_run()
+    extra = [_trace_examine(step, 2) for step in ("secrets", "insecure_config", "dependency_hygiene")]
+    score = _score("no_unneeded_redispatch", [*run_[:8], *extra, *run_[8:]])
+    assert score == pytest.approx(1 - 3 / 13) and score < 0.8
+
+
+def test_sending_a_launch_again_after_an_error_is_not_unneeded():
+    run_ = _clean_run()
+    refused = _trace_refused_examination("SCHEMA_INVALID")
+    assert _score("no_unneeded_redispatch", [refused, *run_]) == 1.0
+
+
+def test_a_review_launch_whose_target_is_not_a_string_is_never_a_repeat():
+    odd = _launched(REVIEW_TOOL, {"target_id": ["EX-SEC-v1"]}, None)
+    assert _score("no_unneeded_redispatch", [*_clean_run(), odd]) == 1.0
+
+
+def test_re_examining_after_a_blocking_review_is_not_unneeded():
+    run_ = _blocked_secrets()
+    assert _score("no_unneeded_redispatch", run_) == 1.0
+
+
+def test_a_re_examination_before_the_step_was_reviewed_is_not_judged_by_a_review_that_does_not_exist():
+    run_ = _clean_run()
+    assert _score("no_unneeded_redispatch", [*run_[:1], _trace_examine("secrets", 2), *run_[1:]]) == 1.0
+
+
+def test_re_examining_after_a_review_that_only_challenged_is_not_unneeded():
+    run_ = _blocked_secrets(ids=("RV-1-C1",))
+    run_[4] = _trace_review("EX-SEC-v1", "challenge", 1)
+    assert _score("no_unneeded_redispatch", run_) == 1.0
+
+
+def test_a_re_examination_with_the_blocking_reviews_challenge_ids_is_targeted():
+    assert _score("targeted_redispatch", _blocked_secrets()) == 1.0
+
+
+def test_a_re_examination_with_no_challenge_ids_is_not_targeted():
+    assert _score("targeted_redispatch", _blocked_secrets(ids=())) == 0.0
+
+
+def test_a_re_examination_with_an_id_no_review_holds_is_not_targeted():
+    assert _score("targeted_redispatch", _blocked_secrets(ids=("RV-9-C1",))) == 0.0
+
+
+def test_a_re_examination_with_one_good_id_and_one_stray_id_is_not_targeted():
+    assert _score("targeted_redispatch", _blocked_secrets(ids=("RV-1-C1", "RV-9-C1"))) == 0.0
+
+
+def test_a_re_examination_with_the_challenge_ids_of_another_steps_review_is_not_targeted():
+    run_ = _blocked_secrets(ids=("RV-2-C1",), others=("block", "pass", "pass"))
+    assert _score("targeted_redispatch", run_) == 0.0
+
+
+def test_the_ids_must_include_one_from_the_latest_review_of_the_latest_examination():
+    older = _blocked_secrets(second="block")
+    stale = [*older, _trace_examine("secrets", 3, ("RV-1-C1",))]
+    current = [*older, _trace_examine("secrets", 3, ("RV-5-C1",))]
+    assert (_score("targeted_redispatch", stale), _score("targeted_redispatch", current)) == (0.5, 1.0)
+
+
+def test_the_standing_challenges_of_every_earlier_review_of_the_step_may_be_passed_together():
+    run_ = [*_blocked_secrets(second="block"), _trace_examine("secrets", 3, ("RV-1-C1", "RV-5-C1"))]
+    assert _score("targeted_redispatch", run_) == 1.0
+
+
+def test_a_refused_re_dispatch_with_a_stray_id_counts_as_made_and_the_resend_as_a_second():
+    refused = _trace_refused_examination("UNKNOWN_TARGET", ids=("RV-9-C1",))
+    resent = _trace_examine("secrets", 2, ("RV-1-C1",))
+    run_ = [*_blocked_secrets()[:5], refused, resent]
+    assert _score("targeted_redispatch", run_) == 0.5
+
+
+def test_a_re_dispatch_refused_at_the_cap_scores_by_its_ids_like_any_other():
+    third = [*_blocked_secrets(second="block"), _trace_examine("secrets", 3, ("RV-5-C1",))]
+    third.append(_trace_review("EX-SEC-v3", "block", 6))
+    capped = _trace_refused_examination("RETRY_CAP_REACHED", ids=("RV-6-C1",))
+    stray = _trace_refused_examination("RETRY_CAP_REACHED", ids=("RV-9-C1",))
+    assert _score("targeted_redispatch", [*third, capped]) == 1.0
+    assert _score("targeted_redispatch", [*third, stray]) == pytest.approx(2 / 3)
+
+
+def test_a_challenged_step_that_is_re_dispatched_does_not_stand_in_for_a_blocked_step_that_is_not():
+    run_ = [
+        *[_trace_examine(step) for step in TRACE_CODES],
+        _trace_review("EX-SEC-v1", "block", 1),
+        _trace_review("EX-CFG-v1", "challenge", 2),
+        _trace_examine("insecure_config", 2, ("RV-2-C1",)),
+    ]
+    assert _score("targeted_redispatch", run_) == 0.5
+
+
+def test_a_blocked_step_that_is_never_re_dispatched_owes_one_targeted_re_dispatch():
+    run_ = _blocked_secrets()[:-2]
+    assert _score("targeted_redispatch", run_) == 0.0
+
+
+def test_an_extra_untargeted_re_dispatch_halves_the_share():
+    run_ = [*_blocked_secrets(second="block"), _trace_examine("secrets", 3, ())]
+    assert _score("targeted_redispatch", run_) == 0.5
+
+
+def test_a_second_targeted_re_dispatch_after_a_second_block_keeps_the_score_at_one():
+    run_ = [*_blocked_secrets(second="block"), _trace_examine("secrets", 3, ("RV-5-C1",))]
+    assert _score("targeted_redispatch", run_) == 1.0
+
+
+def test_a_step_that_was_only_challenged_owes_no_re_dispatch():
+    run_ = _clean_run()
+    run_[4] = _trace_review("EX-SEC-v1", "challenge", 1)
+    assert _score("targeted_redispatch", run_) == 1.0
+
+
+def test_a_blocked_step_that_a_second_review_passes_still_owes_its_re_dispatch():
+    run_ = [*_blocked_secrets()[:5], _trace_review("EX-SEC-v1", "pass", 6)]
+    assert _score("targeted_redispatch", run_) == 0.0
+
+
+def test_a_run_that_blocked_nothing_and_re_dispatched_nothing_is_fully_targeted():
+    assert _score("targeted_redispatch", _clean_run()) == 1.0
+
+
+def test_a_writer_launched_again_with_the_draft_reviews_challenge_ids_is_targeted():
+    run_ = [*_clean_run()[:-1], _trace_review("DR-v1", "block", 5), _trace_write(_accept_all(), 2, ("RV-5-C1",))]
+    assert _score("targeted_redispatch", run_) == 1.0
+
+
+def test_a_writer_launched_again_without_challenge_ids_is_not_targeted():
+    run_ = [*_clean_run()[:-1], _trace_review("DR-v1", "block", 5), _trace_write(_accept_all(), 2, ())]
+    assert _score("targeted_redispatch", run_) == 0.0
+
+
+def test_a_blocked_draft_that_is_never_written_again_owes_one_targeted_re_dispatch():
+    run_ = [*_clean_run()[:-1], _trace_review("DR-v1", "block", 5)]
+    assert _score("targeted_redispatch", run_) == 0.0
+
+
+def test_a_blocked_step_that_is_escalated_at_once_still_owes_its_re_dispatch():
+    run_ = [*_blocked_secrets()[:5], _trace_write({**_accept_all(), "secrets": ("EX-SEC-v1", "escalate")})]
+    assert _score("targeted_redispatch", run_) == 0.0
+
+
+def _escalated(secrets="escalate", others="accept", examination="EX-SEC-v2"):
+    decisions = {step: (f"EX-{code}-v1", others) for step, code in TRACE_CODES.items()}
+    decisions["secrets"] = (examination, secrets)
+    return [*_blocked_secrets(second="block"), _trace_write(decisions), _trace_review("DR-v1", "pass", 6)]
+
+
+def test_escalating_the_blocked_step_and_accepting_the_passed_ones_is_correct():
+    assert _score("escalation_correct", _escalated()) == 1.0
+
+
+def test_accepting_a_step_whose_latest_review_blocks_it_is_a_miss():
+    assert _score("escalation_correct", _escalated(secrets="accept")) == 0.0
+
+
+def test_escalating_a_step_whose_review_passed_is_a_miss():
+    run_ = _clean_run()
+    run_[8] = _trace_write({**_accept_all(), "insecure_config": ("EX-CFG-v1", "escalate")})
+    assert _score("escalation_correct", run_) == 0.0
+
+
+def test_accepting_the_steps_whose_reviews_passed_creates_no_obligation():
+    assert _score("escalation_correct", _clean_run()) == 1.0
+
+
+def test_one_step_escalated_rightly_and_one_wrongly_is_half_met():
+    wrong = _escalated(others="accept")
+    wrong[-2] = _trace_write({**_accept_all(secrets="EX-SEC-v2"), "secrets": ("EX-SEC-v2", "escalate"),
+                              "insecure_config": ("EX-CFG-v1", "escalate")})
+    assert _score("escalation_correct", wrong) == 0.5
+
+
+@pytest.mark.parametrize("decision", ["accept", "escalate"])
+def test_a_step_whose_review_only_challenged_may_be_accepted_or_escalated(decision):
+    run_ = _clean_run()
+    run_[4] = _trace_review("EX-SEC-v1", "challenge", 1)
+    run_[8] = _trace_write({**_accept_all(), "secrets": ("EX-SEC-v1", decision)})
+    assert _score("escalation_correct", run_) == 1.0
+
+
+def test_the_review_of_the_examination_that_is_latest_decides_not_an_older_block():
+    run_ = _blocked_secrets()
+    run_.append(_trace_write(_accept_all(secrets="EX-SEC-v2")))
+    assert _score("escalation_correct", run_) == 1.0
+
+
+def test_the_latest_review_of_an_examination_decides_not_its_first():
+    run_ = [*_blocked_secrets()[:5], _trace_review("EX-SEC-v1", "pass", 6), _trace_write(_accept_all())]
+    assert _score("escalation_correct", run_) == 1.0
+
+
+def test_the_examination_a_disposition_names_is_the_one_whose_review_counts():
+    named_old_and_accepted = [*_blocked_secrets(), _trace_write(_accept_all())]
+    escalated = _trace_write({**_accept_all(), "secrets": ("EX-SEC-v1", "escalate")})
+    named_old_and_escalated = [*_blocked_secrets(), escalated]
+    assert _score("escalation_correct", named_old_and_accepted) == 0.0
+    assert _score("escalation_correct", named_old_and_escalated) == 1.0
+
+
+def test_an_error_that_can_succeed_on_a_resend_owes_the_same_launch_again():
+    run_ = _clean_run()
+    refused = _trace_refused_examination("SCHEMA_INVALID")
+    assert _score("escalation_correct", [refused, *run_]) == 1.0
+
+
+def test_an_error_that_is_never_followed_by_the_same_launch_is_a_miss():
+    others = [step for step in TRACE_CODES if step != "secrets"]
+    refused = _trace_refused_examination("SCHEMA_INVALID")
+    run_ = [
+        refused,
+        *[_trace_examine(step) for step in others],
+        *[_trace_review(f"EX-{TRACE_CODES[step]}-v1", "pass", number) for number, step in enumerate(others, 1)],
+        _trace_write({step: (f"EX-{TRACE_CODES[step]}-v1", "accept") for step in others}),
+    ]
+    assert _score("escalation_correct", run_) == 0.0
+
+
+def test_a_refused_review_is_owed_a_review_of_the_same_target_and_no_other():
+    refused = _trace_refused(REVIEW_TOOL, {"target_id": "EX-SEC-v1"}, "API_ERROR")
+    same, other = _trace_review("EX-SEC-v1", "pass", 1), _trace_review("EX-CFG-v1", "pass", 1)
+    assert (_score("escalation_correct", [refused, same]), _score("escalation_correct", [refused, other])) == (1.0, 0.0)
+
+
+def test_a_resend_through_another_tool_does_not_answer_the_error():
+    refused = _trace_refused_examination("MAX_TOKENS")
+    other = _launched("launch_dependency_examiner", {"step": "secrets", "challenge_ids": [], "note": ""}, None)
+    assert _score("escalation_correct", [refused, other]) == 0.0
+
+
+@pytest.mark.parametrize("code", ["RETRY_CAP_REACHED", "PRECONDITION_FAILED", "UNKNOWN_TARGET", "REFUSAL"])
+def test_an_error_that_a_resend_cannot_cure_owes_nothing(code):
+    refused = _trace_refused_examination(code)
+    assert _score("escalation_correct", [refused, *_clean_run()]) == 1.0
+
+
+@pytest.mark.parametrize(("step", "score"), [("secrets", 1.0), ("insecure_config", 0.0)])
+def test_only_a_resend_for_the_same_step_answers_the_error(step, score):
+    refused = _trace_refused_examination("MAX_TOKENS")
+    assert _score("escalation_correct", [refused, _trace_examine(step)]) == score
+
+
+def test_a_blocked_step_with_no_accepted_draft_is_unmet():
+    assert _score("escalation_correct", _blocked_secrets(second="block")) == 0.0
+
+
+def test_a_later_drafts_disposition_replaces_an_earlier_one():
+    wrong = _escalated(secrets="accept")
+    fixed = [*wrong, _trace_write({**_accept_all(secrets="EX-SEC-v2"), "secrets": ("EX-SEC-v2", "escalate")}, 2)]
+    assert _score("escalation_correct", fixed) == 1.0
+
+
+def test_a_refused_writer_launch_does_not_replace_the_disposition_of_the_accepted_draft():
+    empty = {"disposition": {"steps": [], "summary": ""}, "challenge_ids": []}
+    refused = _trace_refused(WRITE_TOOL, empty, "UNKNOWN_TARGET")
+    assert _score("escalation_correct", [*_escalated(), refused]) == 1.0
+
+
+def test_a_run_with_no_obligation_is_fully_correct():
+    assert _score("escalation_correct", []) == 1.0
+
+
+def test_an_unknown_tool_launch_or_an_unrecognised_result_changes_no_score():
+    odd = [
+        _launched("launch_nothing", {"step": 3}, {"unexpected": True}),
+        _launched("launch_security_examiner", {}, None),
+        _launched("launch_unknown", {"step": "secrets"}, None),
+    ]
+    scores = {name: _score(name, [*odd, *_clean_run()]) for name in COORDINATOR_THRESHOLDS}
+    assert scores == {
+        "review_coverage": 1.0,
+        "targeted_redispatch": 1.0,
+        "no_unneeded_redispatch": 1.0,
+        "escalation_correct": 1.0,
+    }
+
+
+def test_a_launch_of_an_unknown_tool_with_a_step_is_no_re_dispatch_of_that_step():
+    unknown = _launched("launch_unknown", {"step": "secrets"}, None)
+    run_ = [_trace_examine("secrets"), _trace_review("EX-SEC-v1", "pass", 1), unknown]
+    assert (_score("no_unneeded_redispatch", run_), _score("targeted_redispatch", run_)) == (1.0, 1.0)
+
+
+def test_the_tool_names_the_scorers_know_are_the_coordinators_tools():
+    assert {*scoring.EXAMINE_TOOLS, scoring.REVIEW_TOOL, scoring.WRITE_TOOL} == set(MANIFESTS["coordinator"]["tools"])
+
+
+def test_step_names_are_unique_across_examiners_because_the_scorers_and_the_script_key_on_them():
+    examiners = [manifest_ for manifest_ in MANIFESTS.values() if manifest_["role"] == "examiner"]
+    names = [step["name"] for manifest_ in examiners for step in manifest_["steps"]]
+    assert len(names) == len(set(names))
+
+
+def test_the_coordinator_scorers_are_registered_under_the_criteria_names():
+    assert set(scoring.SCORERS["coordinator"]) == set(COORDINATOR_THRESHOLDS)
+
+
+@pytest.mark.parametrize("code", config.DISPATCH_ERROR_CODES)
+def test_only_a_launch_refused_for_a_missing_review_costs_the_coverage_among_every_error_code(code):
+    refused = _trace_refused_examination(code)
+    assert _score("review_coverage", [refused, *_clean_run()]) == (0.0 if code == "PRECONDITION_FAILED" else 1.0)
+
+
+def _load_coordinator(root=run.EVALS_DIR):
+    return run.load_eval_set("coordinator", MANIFESTS, root)
+
+
+def _coordinator_copy(tmp_path):
+    return _copy_set(tmp_path, "coordinator")
+
+
+def _edit_script(root, case_id, change):
+    path = root / "coordinator" / "cases" / case_id / "script.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    change(data)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _answers_of(case):
+    return {(item["agent"], item.get("step")): item["attempts"] for item in case.get("answers", [])}
+
+
+def test_the_coordinator_set_holds_the_planned_cases_criteria_and_thresholds():
+    eval_set = _load_coordinator()
+    assert [case["id"] for case in eval_set.cases] == ["K1", "K2", "K3", "K4", "K5"]
+    assert _thresholds(eval_set) == COORDINATOR_THRESHOLDS
+    assert len(eval_set.criteria) >= 3
+    assert {case["id"]: case["criteria"] for case in eval_set.cases} == COORDINATOR_CRITERIA_BY_CASE
+
+
+def test_a_loaded_coordinator_case_carries_the_manifests_its_executor_needs():
+    eval_set = _load_coordinator()
+    assert all(case["manifests"] is MANIFESTS for case in eval_set.cases)
+    assert eval_set.manifest is MANIFESTS["coordinator"]
+
+
+def test_every_coordinator_script_names_the_workspace_the_coordinator_is_told():
+    assert {case["workspace"] for case in _load_coordinator().cases} == {"acme-shop"}
+
+
+def test_every_shipped_script_passes_the_guardrails_check_on_its_own():
+    for case in _load_coordinator().cases:
+        scripted_dispatcher.check_script(case, MANIFESTS)
+
+
+def test_the_scenarios_are_scripted_as_their_names_say():
+    cases = {case["id"]: _answers_of(case) for case in _load_coordinator().cases}
+    secrets, reviewer = ("security_examiner", "secrets"), ("adversarial_reviewer", "secrets")
+    draft_review = ("adversarial_reviewer", None)
+
+    def verdicts(attempts):
+        return [attempt["output"]["verdict"] for attempt in attempts]
+
+    def findings(attempts):
+        return [len(attempt["output"]["findings"]) for attempt in attempts]
+
+    assert cases["K1"] == {}
+    assert findings(cases["K2"][secrets]) == [1, 0] and verdicts(cases["K2"][reviewer]) == ["block", "pass"]
+    assert [attempt.get("refused") for attempt in cases["K3"][secrets]] == ["SCHEMA_INVALID", None]
+    assert findings(cases["K4"][secrets]) == [1] and verdicts(cases["K4"][reviewer]) == ["block"]
+    assert verdicts(cases["K5"][draft_review]) == ["block", "pass"] and secrets not in cases["K5"]
+
+
+def test_the_coordinator_fixtures_hold_no_secret_like_text():
+    assert _secret_problems(COORDINATOR_DIR) == []
+
+
+BROKEN_SCRIPT_FILES = [
+    pytest.param("K1", lambda c: c.update(id="K7"), "must match the directory name", id="id-not-the-directory"),
+    pytest.param(
+        "K1", lambda c: c["criteria"].append("nope"), "'nope' is not in criteria.json", id="unlisted-criterion"
+    ),
+    pytest.param("K1", lambda c: c.update(extra=1), "Additional properties", id="unknown-key"),
+    pytest.param("K1", lambda c: c.pop("workspace"), "'workspace' is a required property", id="no-workspace"),
+    pytest.param("K1", lambda c: c.update(workspace=""), "workspace", id="empty-workspace"),
+    pytest.param("K1", lambda c: c.update(criteria=[]), "criteria", id="no-criteria"),
+    pytest.param("K1", lambda c: c.update(criteria=["review_coverage"] * 2), "criteria", id="criterion-listed-twice"),
+    pytest.param("K2", lambda c: c.update(files={"app.py": 3}), "files", id="file-text-not-a-string"),
+    pytest.param("K2", lambda c: c.update(files={"../x.py": "t"}), "files: ../x.py", id="file-outside-the-workspace"),
+    pytest.param("K2", lambda c: c.update(files={"": "t"}), "files", id="file-with-no-name"),
+    pytest.param(
+        "K3", lambda c: c["answers"][0]["attempts"][0].update(refused="NOPE"), "refused", id="unknown-refused-code"
+    ),
+    pytest.param(
+        "K2",
+        lambda c: c["answers"][0].update(attempts=[]),
+        "answers/0/attempts: [] should be non-empty",
+        id="answer-without-attempts",
+    ),
+    pytest.param(
+        "K2", lambda c: c["answers"][0]["attempts"][0].pop("output"), "'output' is a required", id="no-output"
+    ),
+    pytest.param(
+        "K2", lambda c: c["answers"][0]["attempts"][0].update(extra=1), "Additional properties", id="attempt-key"
+    ),
+    pytest.param("K2", lambda c: c["answers"][0].update(agent="ghost"), "ghost", id="unknown-agent"),
+    pytest.param(
+        "K2",
+        lambda c: c["answers"][0]["attempts"][0]["output"]["findings"][0].update(line=99),
+        "answers/0/attempts/0",
+        id="an-answer-the-guardrails-refuse",
+    ),
+    pytest.param(
+        "K1",
+        lambda c: c["criteria"].append("targeted_redispatch"),
+        "needs a script with a blocking review",
+        id="targeted-without-a-block",
+    ),
+    pytest.param(
+        "K1",
+        lambda c: c["criteria"].append("escalation_correct"),
+        "needs a script with a refused attempt or a blocking review",
+        id="escalation-without-a-refusal-or-a-block",
+    ),
+]
+
+
+BROKEN_SCRIPT_FILES += [
+    pytest.param(
+        "K2",
+        lambda c, bad=bad: c["answers"][0]["attempts"][0]["output"].update(findings=bad),
+        "answers/0/attempts/0",
+        id=f"findings-{name}",
+    )
+    for name, bad in (("null", None), ("an-integer", 5), ("a-float", 2.5), ("a-string", "x"))
+] + [
+    pytest.param(
+        "K5",
+        lambda c: c["criteria"].append("escalation_correct"),
+        "needs a script with a refused attempt or a blocking review of a step",
+        id="escalation-with-only-a-blocked-draft",
+    ),
+]
+
+
+def _a_refused_block_then_a_pass(c):
+    refused = {"output": {"verdict": "block", "summary": "s", "challenges": []}, "refused": "SCHEMA_INVALID"}
+    passing = {"output": {"verdict": "pass", "summary": "s", "challenges": []}}
+    c["answers"] = [{"agent": "adversarial_reviewer", "step": "secrets", "attempts": [refused, passing]}]
+    c["criteria"].append("targeted_redispatch")
+
+
+def _a_pass_then_a_block(c):
+    challenge = {
+        "finding_id": "",
+        "lens": "catch",
+        "severity": "critical",
+        "claim": "A claim.",
+        "evidence_checked": [{"file": "app.py", "line": 1}],
+        "rationale": "A reason.",
+    }
+    passing = {"output": {"verdict": "pass", "summary": "s", "challenges": []}}
+    blocking = {"output": {"verdict": "block", "summary": "s", "challenges": [challenge]}}
+    c["answers"] = [{"agent": "adversarial_reviewer", "step": "secrets", "attempts": [passing, blocking]}]
+    c["criteria"].append("targeted_redispatch")
+
+
+def _a_refused_examination_after_an_accepted_one(c):
+    clean = {"summary": "s", "findings": [], "limitations": [], "challenge_responses": []}
+    attempts = [{"output": clean}, {"output": {}, "refused": "SCHEMA_INVALID"}]
+    c["answers"] = [{"agent": "security_examiner", "step": "secrets", "attempts": attempts}]
+    c["criteria"].append("escalation_correct")
+
+
+def _a_pass_then_a_block_for_escalation(c):
+    _a_pass_then_a_block(c)
+    c["criteria"].remove("targeted_redispatch")
+    c["criteria"].append("escalation_correct")
+
+
+BROKEN_SCRIPT_FILES += [
+    pytest.param(
+        "K1",
+        _a_refused_examination_after_an_accepted_one,
+        "needs a script with a refused attempt or a blocking review of a step",
+        id="escalation-with-a-refusal-that-comes-second",
+    ),
+    pytest.param(
+        "K1",
+        _a_pass_then_a_block_for_escalation,
+        "needs a script with a refused attempt or a blocking review of a step",
+        id="escalation-with-a-block-that-comes-second",
+    ),
+    pytest.param(
+        "K1",
+        _a_refused_block_then_a_pass,
+        "needs a script with a blocking review",
+        id="targeted-with-only-a-refused-block",
+    ),
+    pytest.param(
+        "K1",
+        _a_pass_then_a_block,
+        "needs a script with a blocking review",
+        id="targeted-with-a-block-that-comes-second",
+    ),
+]
+
+
+@pytest.mark.parametrize(("case_id", "mutate", "fragment"), BROKEN_SCRIPT_FILES)
+def test_a_script_that_breaks_a_rule_is_refused_naming_its_file(tmp_path, case_id, mutate, fragment):
+    root = _coordinator_copy(tmp_path)
+    _edit_script(root, case_id, mutate)
+    with pytest.raises(ValueError) as raised:
+        _load_coordinator(root)
+    assert str(root / "coordinator" / "cases" / case_id / "script.json") in str(raised.value)
+    assert fragment in str(raised.value)
+
+
+def test_the_criteria_descriptions_state_the_rules_the_scorers_apply():
+    described = {item["name"]: item["description"] for item in _load_coordinator().criteria}
+    assert "at least one" in described["targeted_redispatch"] and "made to" in described["targeted_redispatch"]
+    assert "named" in described["escalation_correct"] and "retryable" in described["escalation_correct"]
+    assert all(word in described["review_coverage"] for word in ("PRECONDITION_FAILED", "draft was accepted", "latest"))
+    assert "passed" in described["no_unneeded_redispatch"]
+
+
+def test_a_reviewer_retry_that_ends_in_a_block_serves_both_criteria_that_need_a_block(tmp_path):
+    root = _coordinator_copy(tmp_path)
+
+    def retried(c):
+        challenge = {**c["answers"][1]["attempts"][0]["output"]["challenges"][0]}
+        refused = {"output": {"verdict": "block", "summary": "s", "challenges": []}, "refused": "SCHEMA_INVALID"}
+        blocking = {"output": {"verdict": "block", "summary": "s", "challenges": [challenge]}}
+        passing = {"output": {"verdict": "pass", "summary": "s", "challenges": []}}
+        c["answers"][1]["attempts"] = [refused, blocking, passing]
+        c["criteria"].append("escalation_correct")
+
+    _edit_script(root, "K2", retried)
+    assert "escalation_correct" in _load_coordinator(root).cases[1]["criteria"]
+
+
+def test_an_answer_whose_every_attempt_is_refused_serves_a_criterion_only_through_its_first_refusal(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    always_refused = [{"output": {}, "refused": "SCHEMA_INVALID"}] * 2
+    _edit_script(root, "K2", lambda c: c["answers"][0].update(attempts=always_refused))
+    assert _load_coordinator(root).cases[1]["id"] == "K2"
+    _edit_script(root, "K2", lambda c: c["answers"].pop(1))
+    with pytest.raises(ValueError, match="needs a script with a blocking review"):
+        _load_coordinator(root)
+
+
+def test_a_block_on_the_first_review_that_a_re_examination_clears_still_serves_escalation_correct(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    _edit_script(root, "K2", lambda c: c["criteria"].append("escalation_correct"))
+    assert "escalation_correct" in _load_coordinator(root).cases[1]["criteria"]
+
+
+def test_a_script_that_is_not_json_is_refused_naming_it(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    path = root / "coordinator" / "cases" / "K1" / "script.json"
+    path.write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid JSON") as raised:
+        _load_coordinator(root)
+    assert str(path) in str(raised.value)
+
+
+def test_a_script_that_writes_a_key_twice_is_refused_naming_it(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    path = root / "coordinator" / "cases" / "K1" / "script.json"
+    path.write_text(path.read_text(encoding="utf-8").replace('"workspace"', '"workspace": "x", "workspace"', 1))
+    with pytest.raises(ValueError, match="duplicate key 'workspace'"):
+        _load_coordinator(root)
+
+
+def test_a_case_directory_without_its_script_raises_the_os_error(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    (root / "coordinator" / "cases" / "K1" / "script.json").unlink()
+    with pytest.raises(FileNotFoundError):
+        _load_coordinator(root)
+
+
+def test_a_criterion_no_script_lists_is_refused(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    for case_id in ("K2", "K4", "K5"):
+        _edit_script(root, case_id, lambda c: c["criteria"].remove("targeted_redispatch"))
+    with pytest.raises(ValueError, match="no case lists targeted_redispatch"):
+        _load_coordinator(root)
+
+
+def test_a_coordinator_set_with_no_cases_is_refused(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    shutil.rmtree(root / "coordinator" / "cases")
+    (root / "coordinator" / "cases").mkdir()
+    with pytest.raises(ValueError, match="no cases"):
+        _load_coordinator(root)
+
+
+def test_a_script_may_leave_out_its_files_and_its_answers(tmp_path):
+    root = _coordinator_copy(tmp_path)
+    _edit_script(root, "K1", lambda c: (c.pop("files", None), c.pop("answers", None)))
+    assert _load_coordinator(root).cases[0]["id"] == "K1"
+
+
+def _use(tool, tool_input, number=1):
+    return {"type": "tool_use", "id": f"toolu_{number}", "name": tool, "input": tool_input}
+
+
+def _turn(*blocks):
+    return _message(list(blocks), "tool_use")
+
+
+def _finished():
+    return _message([{"type": "text", "text": "Every step is reviewed and the report is drafted."}])
+
+
+def _examine_use(step, number, ids=()):
+    note = "Look at the cited line again." if ids else ""
+    return _use(f"launch_{TRACE_WORKFLOWS[step]}", {"step": step, "challenge_ids": list(ids), "note": note}, number)
+
+
+def _review_use(target, number):
+    return _use(REVIEW_TOOL, {"target_id": target}, number)
+
+
+def _write_use(number=1, secrets=("EX-SEC-v1", "accept"), ids=()):
+    decisions = {**_accept_all(), "secrets": secrets}
+    steps = [
+        {"workflow": TRACE_WORKFLOWS[step], "step": step, "examination_id": e, "decision": d, "rationale": "Stands."}
+        for step, (e, d) in decisions.items()
+    ]
+    return _use(WRITE_TOOL, {"disposition": {"steps": steps, "summary": "Done."}, "challenge_ids": list(ids)}, number)
+
+
+def _all_examined():
+    return _turn(*[_examine_use(step, number) for number, step in enumerate(TRACE_CODES, 1)])
+
+
+def _all_reviewed():
+    return _turn(*[_review_use(f"EX-{code}-v1", number) for number, code in enumerate(TRACE_CODES.values(), 1)])
+
+
+def _k_script(case_id):
+    """Return the coordinator turns that govern case_id as the prompt says to, with the IDs the harness assigns; raises
+    AssertionError for a case that has none.
+    """
+    steps = list(TRACE_CODES)
+    match case_id:
+        case "K1":
+            return [_all_examined(), _all_reviewed(), _turn(_write_use()), _turn(_review_use("DR-v1", 1)), _finished()]
+        case "K2":
+            return [
+                _all_examined(),
+                _all_reviewed(),
+                _turn(_examine_use("secrets", 1, ["RV-1-C1"])),
+                _turn(_review_use("EX-SEC-v2", 1)),
+                _turn(_write_use(secrets=("EX-SEC-v2", "accept"))),
+                _turn(_review_use("DR-v1", 1)),
+                _finished(),
+            ]
+        case "K3":
+            reviews = [_review_use(f"EX-{TRACE_CODES[step]}-v1", n) for n, step in enumerate(steps[1:], 2)]
+            retry = [_examine_use("secrets", 1), *reviews]
+            return [
+                _all_examined(),
+                _turn(*retry),
+                _turn(_review_use("EX-SEC-v1", 1)),
+                _turn(_write_use()),
+                _turn(_review_use("DR-v1", 1)),
+                _finished(),
+            ]
+        case "K4":
+            return [
+                _all_examined(),
+                _all_reviewed(),
+                _turn(_examine_use("secrets", 1, ["RV-1-C1"])),
+                _turn(_review_use("EX-SEC-v2", 1)),
+                _turn(_write_use(secrets=("EX-SEC-v2", "escalate"))),
+                _turn(_review_use("DR-v1", 1)),
+                _finished(),
+            ]
+        case "K5":
+            return [
+                _all_examined(),
+                _all_reviewed(),
+                _turn(_write_use()),
+                _turn(_review_use("DR-v1", 1)),
+                _turn(_write_use(ids=["RV-5-C1"])),
+                _turn(_review_use("DR-v2", 1)),
+                _finished(),
+            ]
+    raise AssertionError(case_id)
+
+
+def _coordinator_oracle(runs=1, overrides=None):
+    """Return the script of an ideal coordinator over every case, runs times; overrides maps a case to its turns."""
+    overrides = overrides or {}
+    return [
+        message
+        for _ in range(runs)
+        for case_id in ("K1", "K2", "K3", "K4", "K5")
+        for message in overrides.get(case_id, _k_script(case_id))
+    ]
+
+
+@pytest.fixture
+def recorded_dispatchers(monkeypatch):
+    """Return the list that every ScriptedDispatcher the executor builds is added to, in case run order."""
+    made, original = [], scripted_dispatcher.ScriptedDispatcher
+
+    class Recording(original):
+        def __init__(self, script):
+            super().__init__(script)
+            made.append(self)
+
+    monkeypatch.setattr(scripted_dispatcher, "ScriptedDispatcher", Recording)
+    return made
+
+
+def _launches_of(case_id):
+    return sum(block.type == "tool_use" for message in _k_script(case_id) for block in message.content)
+
+
+def test_the_scripted_dispatcher_is_asked_once_for_each_launch_the_coordinator_made(evaluate, recorded_dispatchers):
+    _, _, root = evaluate(_coordinator_oracle(), agent="coordinator")
+    started = [line for line in _audit_lines(root) if line["event"] == "dispatch_started"]
+    asked = [len(dispatcher.calls) for dispatcher in recorded_dispatchers]
+    assert asked == [_launches_of(case) for case in COORDINATOR_CRITERIA_BY_CASE]
+    assert sum(asked) == len(started)
+
+
+def test_the_scripted_dispatcher_is_never_asked_when_the_coordinator_launches_nothing(evaluate, recorded_dispatchers):
+    evaluate([_finished() for _ in range(5)], agent="coordinator")
+    assert [dispatcher.calls for dispatcher in recorded_dispatchers] == [[]] * 5
+
+
+def test_a_launch_refused_before_any_sub_agent_runs_reaches_no_scripted_answer(evaluate, recorded_dispatchers):
+    refused = [_all_examined(), _turn(_review_use("EX-NOPE-v9", 1)), _finished()]
+    evaluate(_coordinator_oracle(overrides={"K1": refused}), agent="coordinator")
+    assert len(recorded_dispatchers[0].calls) == 4
+
+
+def _subagent_callers(source):
+    """Return the name of the function around each call of run_subagent in source, '<module>' outside any."""
+    found = []
+
+    def visit(node, scope):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.Call):
+                name = child.func.attr if isinstance(child.func, ast.Attribute) else getattr(child.func, "id", None)
+                if name == "run_subagent":
+                    found.append(scope)
+            visit(child, child.name if isinstance(child, ast.FunctionDef) else scope)
+
+    visit(ast.parse(source), "<module>")
+    return found
+
+
+def test_the_source_calls_run_subagent_only_from_the_dispatchers_dispatch():
+    callers = [
+        (path.relative_to(config.ROOT).as_posix(), caller)
+        for path in sorted((config.ROOT / "src").rglob("*.py"))
+        for caller in _subagent_callers(path.read_text(encoding="utf-8"))
+    ]
+    assert callers == [("src/assessor/coordinator.py", "_dispatch")]
+
+
+@pytest.mark.parametrize(
+    ("source", "callers"),
+    [
+        ("def other():\n    runner.run_subagent(1)\n", ["other"]),
+        ("def other():\n    run_subagent(1)\n", ["other"]),
+        ("runner.run_subagent(1)\n", ["<module>"]),
+        ("class A:\n    def f(self):\n        def g():\n            runner.run_subagent(1)\n", ["g"]),
+        ("def other():\n    return 1\n", []),
+    ],
+)
+def test_the_run_subagent_scan_finds_a_planted_call_wherever_it_sits(source, callers):
+    assert _subagent_callers(source) == callers
+
+
+def _scores(root):
+    return {entry["case_id"]: entry["scores"] for entry in _results(root, "coordinator")["cases"]}
+
+
+def _audit_lines(root):
+    logs = sorted((root / ".runs").glob("*/audit.jsonl"))
+    return [json.loads(line) for log in logs for line in log.read_text().splitlines()]
+
+
+def test_an_ideal_coordinator_passes_every_criterion_of_every_case(evaluate):
+    code, client, root = evaluate(_coordinator_oracle(), agent="coordinator")
+    assert (code, client.script) == (0, [])
+    results = _results(root, "coordinator")
+    assert [entry["error"] for entry in results["cases"]] == [None] * 5
+    assert {case: sorted(scores) for case, scores in _scores(root).items()} == {
+        case: sorted(names) for case, names in COORDINATOR_CRITERIA_BY_CASE.items()
+    }
+    assert all(value == 1.0 for scores in _scores(root).values() for value in scores.values())
+    assert all(item["passed_all_runs"] for item in results["summary"])
+
+
+def test_each_run_replays_every_script_from_its_first_attempt(evaluate):
+    code, client, root = evaluate(_coordinator_oracle(runs=2), runs=2, agent="coordinator")
+    assert (code, client.script) == (0, [])
+    entries = _results(root, "coordinator")["cases"]
+    assert [set(entry["scores"].values()) for entry in entries] == [{1.0}] * 10
+
+
+def test_the_coordinator_requests_are_the_real_coordinators_and_the_only_requests_sent(evaluate):
+    coordinator_manifest = MANIFESTS["coordinator"]
+    _, client, _ = evaluate(_coordinator_oracle(), agent="coordinator")
+    first = client.requests[0]
+    assert first["model"] == coordinator_manifest["model"]
+    assert first["output_config"] == {"effort": coordinator_manifest["effort"]}
+    assert first["system"] == (config.ROOT / coordinator_manifest["prompt"]).read_text(encoding="utf-8").strip()
+    task = json.loads(first["messages"][0]["content"])
+    assert task["workspace"] == "acme-shop"
+    assert [(item["workflow"], item["step"]) for item in task["steps"]] == [
+        (TRACE_WORKFLOWS[step], step) for step in TRACE_CODES
+    ]
+    offered = [[tool["name"] for tool in request["tools"]] for request in client.requests]
+    assert offered == [coordinator_manifest["tools"]] * len(client.requests)
+    assert all(request["model"] == coordinator_manifest["model"] for request in client.requests)
+
+
+def test_a_sub_agent_is_dispatched_only_for_a_launch_the_coordinator_made(evaluate):
+    _, _, root = evaluate(_coordinator_oracle(), agent="coordinator")
+    lines = _audit_lines(root)
+    dispatches = [line for line in lines if line["event"] == "dispatch_started"]
+    messages = [message for case in COORDINATOR_CRITERIA_BY_CASE for message in _k_script(case)]
+    launches = sum(block.type == "tool_use" for message in messages for block in message.content)
+    assert len(dispatches) == launches
+    assert [line for line in lines if line["event"] == "llm_call" and line["agent"] != "coordinator"] == []
+
+
+def test_a_coordinator_that_ends_its_turn_at_once_dispatches_nothing_and_scores_no_coverage(evaluate):
+    code, _, root = evaluate([_finished() for _ in range(5)], agent="coordinator")
+    assert code == 1
+    assert [line for line in _audit_lines(root) if line["event"] in ("dispatch_started", "dispatch_finished")] == []
+    assert {scores["review_coverage"] for scores in _scores(root).values()} == {0.0}
+
+
+def test_a_coordinator_that_stops_at_its_turn_limit_is_halted_and_every_criterion_scores_its_worst(evaluate):
+    forever = [_turn(_examine_use("secrets", 1)) for _ in range(MANIFESTS["coordinator"]["max_turns"])]
+    code, _, root = evaluate(forever * 5, agent="coordinator")
+    entries = _results(root, "coordinator")["cases"]
+    assert code == 1
+    assert {entry["error"] for entry in entries} == {"COORDINATOR_TURN_LIMIT"}
+    assert [entry["scores"] for entry in entries] == [
+        {name: 0.0 for name in names} for names in COORDINATOR_CRITERIA_BY_CASE.values()
+    ]
+    assert len([line for line in _audit_lines(root) if line["event"] == "dispatch_started"]) == 3 * 5
+
+
+def test_a_refusal_of_the_coordinator_ends_the_case_run_with_its_halt_reason(evaluate):
+    refusal = _message([{"type": "text", "text": "No."}], "refusal")
+    _, _, root = evaluate([refusal] * 5, agent="coordinator")
+    assert {entry["error"] for entry in _results(root, "coordinator")["cases"]} == {"COORDINATOR_REFUSAL"}
+
+
+def test_the_sub_agent_runner_is_the_real_one_again_after_a_run_and_after_a_halt(evaluate):
+    original = runner.run_subagent
+    _, _, root = evaluate(_coordinator_oracle(), agent="coordinator")
+    assert runner.run_subagent is original
+    evaluate([_message([{"type": "text", "text": "No."}], "refusal")] * 5, agent="coordinator", root=root)
+    assert runner.run_subagent is original
+
+
+def test_a_case_run_leaves_no_temporary_workspace_behind(evaluate, monkeypatch, tmp_path):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr("tempfile.tempdir", None)
+    evaluate(_coordinator_oracle(), agent="coordinator")
+    assert list(scratch.iterdir()) == []
+
+
+def test_coordinator_results_have_the_documented_shape(evaluate):
+    _, _, root = evaluate(_coordinator_oracle(), agent="coordinator")
+    results = _results(root, "coordinator")
+    manifest_ = MANIFESTS["coordinator"]
+    assert list(results) == [
+        "agent",
+        "model",
+        "effort",
+        "prompt_sha256",
+        "skills_sha256",
+        "generated_at",
+        "runs",
+        "cases",
+        "summary",
+        "total_cost_usd",
+    ]
+    identity = (results["agent"], results["model"], results["effort"])
+    assert identity == ("coordinator", manifest_["model"], manifest_["effort"])
+    assert results["prompt_sha256"] == hashlib.sha256((config.ROOT / manifest_["prompt"]).read_bytes()).hexdigest()
+    assert results["skills_sha256"] == hashlib.sha256().hexdigest()
+    assert [(entry["case_id"], entry["run"]) for entry in results["cases"]] == [(f"K{n}", 1) for n in range(1, 6)]
+    assert [item["criterion"] for item in results["summary"]] == list(COORDINATOR_THRESHOLDS)
+
+
+def test_the_cost_of_a_coordinator_case_run_is_its_own_calls_alone(evaluate):
+    _, _, root = evaluate(_coordinator_oracle(), agent="coordinator")
+    results = _results(root, "coordinator")
+    calls = {entry["case_id"]: len(_k_script(entry["case_id"])) for entry in results["cases"]}
+    assert {entry["case_id"]: (entry["input_tokens"], entry["output_tokens"]) for entry in results["cases"]} == {
+        case: (100 * count, 20 * count) for case, count in calls.items()
+    }
+    lines = [line for line in _audit_lines(root) if line["event"] == "llm_call"]
+    assert results["total_cost_usd"] == pytest.approx(sum(line["cost_usd"] for line in lines))
+
+
+def test_a_coordinator_that_escalates_a_critical_challenge_at_once_misses_the_targeted_re_dispatch(evaluate):
+    escalate = [
+        _all_examined(),
+        _all_reviewed(),
+        _turn(_write_use(secrets=("EX-SEC-v1", "escalate"))),
+        _turn(_review_use("DR-v1", 1)),
+        _finished(),
+    ]
+    code, _, root = evaluate(_coordinator_oracle(overrides={"K2": escalate}), agent="coordinator")
+    assert (code, _scores(root)["K2"]["targeted_redispatch"]) == (1, 0.0)
+
+
+def test_a_coordinator_that_accepts_a_step_that_stays_blocked_misses_the_escalation(evaluate):
+    accept = _k_script("K4")
+    accept[4] = _turn(_write_use(secrets=("EX-SEC-v2", "accept")))
+    code, _, root = evaluate(_coordinator_oracle(overrides={"K4": accept}), agent="coordinator")
+    assert (code, _scores(root)["K4"]["escalation_correct"]) == (1, 0.0)
+
+
+def test_a_coordinator_that_never_retries_a_refused_examination_scores_nothing_on_escalation(evaluate):
+    giving_up = [
+        _all_examined(),
+        _turn(*[_review_use(f"EX-{code}-v1", number) for number, code in enumerate(list(TRACE_CODES.values())[1:], 1)]),
+        _turn(_write_use()),
+        _finished(),
+    ]
+    code, _, root = evaluate(_coordinator_oracle(overrides={"K3": giving_up}), agent="coordinator")
+    assert code == 1
+    assert _scores(root)["K3"] == {"review_coverage": 0.0, "escalation_correct": 0.0}
+
+
+def test_a_coordinator_that_writes_before_the_reviews_exist_loses_its_coverage_though_it_recovers(evaluate):
+    early = [_all_examined(), _turn(_write_use()), *_k_script("K1")[1:]]
+    code, _, root = evaluate(_coordinator_oracle(overrides={"K1": early}), agent="coordinator")
+    scores = _scores(root)["K1"]
+    assert (code, scores["review_coverage"], scores["no_unneeded_redispatch"]) == (1, 0.0, 1.0)
+
+
+def test_a_coordinator_that_examines_a_passed_step_again_scores_one_unneeded_launch_of_twelve(evaluate):
+    again = [
+        _all_examined(),
+        _all_reviewed(),
+        _turn(_examine_use("secrets", 1)),
+        _turn(_review_use("EX-SEC-v2", 1)),
+        _turn(_write_use(secrets=("EX-SEC-v2", "accept"))),
+        _turn(_review_use("DR-v1", 1)),
+        _finished(),
+    ]
+    code, _, root = evaluate(_coordinator_oracle(overrides={"K1": again}), agent="coordinator")
+    assert code == 0
+    assert _scores(root)["K1"]["no_unneeded_redispatch"] == pytest.approx(11 / 12)
+
+
+def _tool_results(*pairs):
+    return [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": []},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": use_id, "content": json.dumps(payload), "is_error": False}
+                for use_id, payload in pairs
+            ],
+        },
+    ]
+
+
+def _step_use(number, step="secrets", tool="launch_security_examiner"):
+    return _use(tool, {"step": step, "challenge_ids": [], "note": ""}, number)
+
+
+def test_the_trace_pairs_each_launch_with_the_result_the_next_request_carried_in_block_order(fake_anthropic):
+    first = _turn(_step_use(1), {"type": "text", "text": "Both at once."}, _step_use(2, "insecure_config"))
+    traced = run._Trace(fake_anthropic([first, _finished()]))
+    traced.beta.messages.create(messages=[{"role": "user", "content": "task"}])
+    assert [item["result"] for item in traced.launches] == [None, None]
+    error = {"error": {"code": "SCHEMA_INVALID"}}
+    traced.beta.messages.create(messages=_tool_results(("toolu_2", {"step": "insecure_config"}), ("toolu_1", error)))
+    assert traced.launches == [
+        {"tool": "launch_security_examiner", "input": {"step": "secrets", "challenge_ids": [], "note": ""},
+         "result": {"error": {"code": "SCHEMA_INVALID"}}},
+        {"tool": "launch_security_examiner", "input": {"step": "insecure_config", "challenge_ids": [], "note": ""},
+         "result": {"step": "insecure_config"}},
+    ]
+
+
+def test_the_trace_keeps_launches_in_order_across_turns(fake_anthropic):
+    turns = [_turn(_step_use(1)), _turn(_step_use(2, "insecure_config")), _finished()]
+    traced = run._Trace(fake_anthropic(turns))
+    traced.beta.messages.create(messages=[{"role": "user", "content": "task"}])
+    traced.beta.messages.create(messages=_tool_results(("toolu_1", {"ok": 1})))
+    traced.beta.messages.create(messages=_tool_results(("toolu_2", {"ok": 2})))
+    assert [(item["input"]["step"], item["result"]) for item in traced.launches] == [
+        ("secrets", {"ok": 1}),
+        ("insecure_config", {"ok": 2}),
+    ]
+
+
+def test_a_launch_whose_result_no_request_carried_keeps_no_result(fake_anthropic):
+    traced = run._Trace(fake_anthropic([_turn(_step_use(1))]))
+    traced.beta.messages.create(messages=[{"role": "user", "content": "task"}])
+    assert traced.launches[0]["result"] is None
+
+
+def test_the_trace_hands_the_request_on_and_the_response_back_unchanged(fake_anthropic):
+    reply = _finished()
+    client = fake_anthropic([reply])
+    request = {"model": SONNET, "messages": [{"role": "user", "content": "task"}]}
+    assert run._Trace(client).beta.messages.create(**request) is reply
+    assert client.requests == [request]
+
+
+def test_a_tool_result_for_an_id_no_launch_has_is_ignored(fake_anthropic):
+    traced = run._Trace(fake_anthropic([_turn(_step_use(1)), _finished()]))
+    traced.beta.messages.create(messages=[{"role": "user", "content": "task"}])
+    traced.beta.messages.create(messages=_tool_results(("toolu_9", {"ok": 1})))
+    assert traced.launches[0]["result"] is None
+
+
+def test_the_trace_keeps_a_copy_of_each_launch_input(fake_anthropic):
+    reply = _turn(_step_use(1))
+    traced = run._Trace(fake_anthropic([reply]))
+    traced.beta.messages.create(messages=[{"role": "user", "content": "task"}])
+    reply.content[0].input["step"] = "changed"
+    assert traced.launches[0]["input"]["step"] == "secrets"
+
+
+def test_an_error_of_the_client_reaches_the_caller_and_records_no_launch(fake_anthropic):
+    class Boom(Exception):
+        pass
+
+    traced = run._Trace(fake_anthropic([Boom()]))
+    with pytest.raises(Boom):
+        traced.beta.messages.create(messages=[{"role": "user", "content": "task"}])
+    assert traced.launches == []

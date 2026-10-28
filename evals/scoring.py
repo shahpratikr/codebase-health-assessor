@@ -347,6 +347,172 @@ def tone_score(case: Mapping, outputs: Mapping) -> float:
     return float(outputs["tone"])
 
 
+EXAMINE_TOOLS = ("launch_security_examiner", "launch_dependency_examiner")
+REVIEW_TOOL, WRITE_TOOL = "launch_adversarial_reviewer", "launch_final_review_writer"
+
+
+def _kind(launch: Mapping) -> str | None:
+    if launch["tool"] == REVIEW_TOOL:
+        return "review"
+    if launch["tool"] == WRITE_TOOL:
+        return "write"
+    return "examine" if launch["tool"] in EXAMINE_TOOLS and isinstance(launch["input"].get("step"), str) else None
+
+
+def _error(launch: Mapping) -> Mapping:
+    error = launch["result"].get("error") if isinstance(launch["result"], Mapping) else None
+    return error if isinstance(error, Mapping) else {}
+
+
+class _Ledger:
+    """What the launches noted so far produced: accepted examinations by step, accepted reviews by target ID, accepted
+    drafts, the disposition of the latest accepted draft and, per chain (a step, or "draft"), the verdict of its first
+    review and the IDs of every challenge made to it.
+    """
+
+    def __init__(self) -> None:
+        self.examinations: dict[str, list[Mapping]] = {}
+        self.reviews: dict[str, list[Mapping]] = {}
+        self.drafts: list[Mapping] = []
+        self.disposition: Mapping | None = None
+        self.first_verdict: dict[str, str] = {}
+        self.challenges: dict[str, set[str]] = {}
+        self._step_of: dict[str, str] = {}
+
+    def note(self, launch: Mapping) -> None:
+        result = launch["result"]
+        if not isinstance(result, Mapping):
+            return
+        if "examination_id" in result:
+            self.examinations.setdefault(result["step"], []).append(result)
+            self._step_of[result["examination_id"]] = result["step"]
+        elif "review_id" in result:
+            target = result["target_id"]
+            self.reviews.setdefault(target, []).append(result)
+            chain = self._step_of.get(target, "draft")
+            self.first_verdict.setdefault(chain, result["verdict"])
+            self.challenges.setdefault(chain, set()).update(challenge["id"] for challenge in result["challenges"])
+        elif "draft_id" in result:
+            self.drafts.append(result)
+            self.disposition = launch["input"].get("disposition")
+
+    def latest_examination(self, step: str) -> Mapping | None:
+        return self.examinations[step][-1] if self.examinations.get(step) else None
+
+    def latest_draft(self) -> Mapping | None:
+        return self.drafts[-1] if self.drafts else None
+
+    def latest_review(self, target_id: str) -> Mapping | None:
+        return self.reviews[target_id][-1] if self.reviews.get(target_id) else None
+
+
+def _redone(ledger: _Ledger, launch: Mapping) -> tuple[str, str] | None:
+    """Return the chain and the ID of the accepted examination or draft that launch would run again, or None."""
+    match _kind(launch):
+        case "examine":
+            latest = ledger.latest_examination(launch["input"]["step"])
+            return (launch["input"]["step"], latest["examination_id"]) if latest else None
+        case "write":
+            latest = ledger.latest_draft()
+            return ("draft", latest["draft_id"]) if latest else None
+    return None
+
+
+def review_coverage(case: Mapping, outputs: Mapping) -> float:
+    """Return 1.0 when no launch was refused with PRECONDITION_FAILED, a draft was accepted, and the latest accepted
+    draft and the latest accepted examination of every examined step each have an accepted review, otherwise 0.0.
+    """
+    ledger, early = _Ledger(), False
+    for launch in outputs["launches"]:
+        early |= _error(launch).get("code") == "PRECONDITION_FAILED"
+        ledger.note(launch)
+    draft = ledger.latest_draft()
+    latest = [ledger.latest_examination(step)["examination_id"] for step in ledger.examinations]
+    unreviewed = [target for target in latest if ledger.latest_review(target) is None]
+    return 1.0 if not early and draft and ledger.latest_review(draft["draft_id"]) and not unreviewed else 0.0
+
+
+def no_unneeded_redispatch(case: Mapping, outputs: Mapping) -> float:
+    """Return 1 less the share of launches that repeated finished work, or 1.0 for no launch.
+
+    A launch repeats finished work when it examines a step or writes a draft again after the latest one's review passed,
+    or reviews a target that already has an accepted review; a launch that was refused counts too.
+    """
+    launches = outputs["launches"]
+    if not launches:
+        return 1.0
+    ledger, repeated = _Ledger(), 0
+    for launch in launches:
+        redone = _redone(ledger, launch)
+        if redone is not None:
+            review = ledger.latest_review(redone[1])
+            repeated += bool(review and review["verdict"] == "pass")
+        elif _kind(launch) == "review":
+            target = launch["input"].get("target_id")
+            repeated += isinstance(target, str) and target in ledger.reviews
+        ledger.note(launch)
+    return 1 - repeated / len(launches)
+
+
+def targeted_redispatch(case: Mapping, outputs: Mapping) -> float:
+    """Return the share of re-dispatches that are targeted, counting per step and for the draft the larger of those made
+    and those owed, or 1.0 for none.
+
+    A launch that examines a step or writes a draft again is a re-dispatch, targeted when its challenge_ids are not
+    empty, all challenges made to that step or draft, and include one of the latest review; a step or draft whose first
+    accepted review blocks it owes one.
+    """
+    ledger, made, targeted = _Ledger(), {}, {}
+    for launch in outputs["launches"]:
+        redone = _redone(ledger, launch)
+        if redone is not None:
+            chain, target = redone
+            review, ids = ledger.latest_review(target), launch["input"].get("challenge_ids")
+            latest = {challenge["id"] for challenge in review["challenges"]} if review else set()
+            known = ledger.challenges.get(chain, ())
+            made[chain] = made.get(chain, 0) + 1
+            targeted[chain] = targeted.get(chain, 0) + (
+                isinstance(ids, list)
+                and bool(ids)
+                and all(isinstance(i, str) and i in known for i in ids)
+                and any(i in latest for i in ids)
+            )
+        ledger.note(launch)
+    owed = {chain for chain, verdict in ledger.first_verdict.items() if verdict == "block"}
+    total = sum(max(made.get(chain, 0), chain in owed) for chain in {*made, *owed})
+    return sum(targeted.values()) / total if total else 1.0
+
+
+def _same_launch(launch: Mapping, other: Mapping) -> bool:
+    return launch["tool"] == other["tool"] and all(
+        launch["input"].get(key) == other["input"].get(key) for key in ("step", "target_id")
+    )
+
+
+def escalation_correct(case: Mapping, outputs: Mapping) -> float:
+    """Return the share met of the obligations the trace creates, or 1.0 for none.
+
+    A launch refused with a retryable error is to be sent again, and in the latest accepted draft's disposition a step
+    whose named examination's latest review blocks it is to be escalated and one whose review passes it is not.
+    """
+    launches, ledger, met, total = outputs["launches"], _Ledger(), 0, 0
+    for number, launch in enumerate(launches):
+        ledger.note(launch)
+        if _error(launch).get("retryable") is True:
+            total += 1
+            met += any(_same_launch(launch, later) for later in launches[number + 1 :])
+    entries = {entry.get("step"): entry for entry in (ledger.disposition or {}).get("steps", [])}
+    for step in ledger.examinations:
+        entry = entries.get(step, {})
+        named = entry.get("examination_id") or ledger.latest_examination(step)["examination_id"]
+        review = ledger.latest_review(named)
+        verdict, escalated = review["verdict"] if review else None, entry.get("decision") == "escalate"
+        if verdict == "block" or (verdict == "pass" and escalated):
+            total += 1
+            met += verdict == "block" and escalated
+    return met / total if total else 1.0
+
+
 SCORERS: dict[str, dict[str, Callable[[Mapping, Mapping], float]]] = {
     "security_examiner": {
         "seeded_recall": seeded_recall,
@@ -372,12 +538,19 @@ SCORERS: dict[str, dict[str, Callable[[Mapping, Mapping], float]]] = {
         "structure_valid_first_try": structure_valid_first_try,
         "tone_score": tone_score,
     },
+    "coordinator": {
+        "review_coverage": review_coverage,
+        "targeted_redispatch": targeted_redispatch,
+        "no_unneeded_redispatch": no_unneeded_redispatch,
+        "escalation_correct": escalation_correct,
+    },
 }
 
 
 def score(agent: str, case: Mapping, outputs: Mapping) -> dict[str, float]:
     """Return the agent's score for each criterion the case lists, from the outputs of its executor: the accepted
-    examinations keyed by step, a reviewer's review and reads, or a writer's draft and tone score.
+    examinations keyed by step, a reviewer's review and reads, a writer's draft and tone score, or a coordinator's
+    launches.
     """
     return {name: SCORERS[agent][name](case, outputs) for name in case["criteria"]}
 

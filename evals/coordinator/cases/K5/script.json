@@ -1,0 +1,44 @@
+{
+  "id": "K5",
+  "description": "Every examination is clean; the reviewer blocks the first draft for a finding no examination holds, and passes the second.",
+  "workspace": "acme-shop",
+  "answers": [
+    {
+      "agent": "adversarial_reviewer",
+      "attempts": [
+        {
+          "output": {
+            "verdict": "block",
+            "summary": "The draft reports a finding of its own.",
+            "challenges": [
+              {
+                "finding_id": "",
+                "lens": "detect",
+                "severity": "critical",
+                "claim": "The draft reports a hard-coded key in app.py that no examination holds.",
+                "evidence_checked": [
+                  {
+                    "file": "app.py",
+                    "line": 3
+                  }
+                ],
+                "rationale": "No accepted examination lists a finding for app.py."
+              }
+            ]
+          }
+        },
+        {
+          "output": {
+            "verdict": "pass",
+            "summary": "The draft keeps to its input.",
+            "challenges": []
+          }
+        }
+      ]
+    }
+  ],
+  "criteria": [
+    "review_coverage",
+    "targeted_redispatch"
+  ]
+}

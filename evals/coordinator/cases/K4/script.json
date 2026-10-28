@@ -1,0 +1,67 @@
+{
+  "id": "K4",
+  "description": "The secrets examiner keeps reporting a credential on a line that holds none, and the reviewer keeps blocking it, so the step is never resolved.",
+  "workspace": "acme-shop",
+  "files": {
+    "app.py": "import os\n\nSECRET_KEY = os.environ[\"SECRET_KEY\"]\nDB_URL = \"sqlite:///shop.db\"\n"
+  },
+  "answers": [
+    {
+      "agent": "security_examiner",
+      "step": "secrets",
+      "attempts": [
+        {
+          "output": {
+            "summary": "One committed credential.",
+            "findings": [
+              {
+                "title": "Database credential in source",
+                "severity": "critical",
+                "category": "secret",
+                "file": "app.py",
+                "line": 4,
+                "evidence": "Line 4 sets DB_URL to a literal connection string.",
+                "recommendation": "Read the connection string from the environment.",
+                "advisory_ids": []
+              }
+            ],
+            "limitations": [],
+            "challenge_responses": []
+          }
+        }
+      ]
+    },
+    {
+      "agent": "adversarial_reviewer",
+      "step": "secrets",
+      "attempts": [
+        {
+          "output": {
+            "verdict": "block",
+            "summary": "The finding names a credential that is not there.",
+            "challenges": [
+              {
+                "finding_id": "SEC-1",
+                "lens": "challenge",
+                "severity": "critical",
+                "claim": "Line 4 is a local SQLite file path and holds no credential.",
+                "evidence_checked": [
+                  {
+                    "file": "app.py",
+                    "line": 4
+                  }
+                ],
+                "rationale": "A sqlite URL names a file and carries no user or password."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "criteria": [
+    "review_coverage",
+    "targeted_redispatch",
+    "escalation_correct"
+  ]
+}

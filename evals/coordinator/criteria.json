@@ -1,0 +1,28 @@
+{
+  "criteria": [
+    {
+      "name": "review_coverage",
+      "threshold": 1.0,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 when no launch was refused with PRECONDITION_FAILED, a draft was accepted, and the latest accepted draft and the latest accepted examination of every step each have an accepted review, otherwise 0."
+    },
+    {
+      "name": "targeted_redispatch",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share of re-dispatches (a step examined again, a draft written again) that are targeted: challenge_ids not empty, each a challenge made to an examination of that step or to a draft, and at least one from the latest review of the latest examination or draft; counted per step and for the draft over the re-dispatches made, or the one owed when its first review blocked, if more."
+    },
+    {
+      "name": "no_unneeded_redispatch",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 less the share of launches that repeated finished work: examining a step or writing a draft again after its latest review passed, or reviewing a target that already has an accepted review."
+    },
+    {
+      "name": "escalation_correct",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share met of: each launch refused with a retryable error is sent again for the same tool and step or target; in the disposition of the latest accepted draft, a step whose named examination's latest review blocks it is escalated, and one whose review passes it is not."
+    }
+  ]
+}

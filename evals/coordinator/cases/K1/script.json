@@ -1,0 +1,9 @@
+{
+  "id": "K1",
+  "description": "Every step is clean and every review passes, so nothing is to be examined or written twice.",
+  "workspace": "acme-shop",
+  "criteria": [
+    "review_coverage",
+    "no_unneeded_redispatch"
+  ]
+}
