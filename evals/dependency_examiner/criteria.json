@@ -1,0 +1,28 @@
+{
+  "criteria": [
+    {
+      "name": "vuln_recall",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share of their vulnerable pinned packages that the known_vulnerabilities examination reports in the same file within 2 lines, citing an advisory that OSV returned for that package version."
+    },
+    {
+      "name": "no_fabricated_advisories",
+      "threshold": 1.0,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 when every advisory ID a finding cites is an ID or an alias that the recorded OSV responses hold, otherwise 0."
+    },
+    {
+      "name": "hygiene_recall",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share of their seeded hygiene issues that the dependency_hygiene examination reports in the same file within 2 lines."
+    },
+    {
+      "name": "clean_precision",
+      "threshold": 1.0,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 when the case gets no critical or high finding in any step, and where OSV lookups are meant to fail its limitations name every such package and its known_vulnerabilities step reports no finding, otherwise 0."
+    }
+  ]
+}

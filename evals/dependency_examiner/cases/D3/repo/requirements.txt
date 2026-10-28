@@ -1,0 +1,12 @@
+# Storefront service dependencies
+flask>=2.0
+
+# HTTP client used for the payment API
+# Left open so security fixes arrive automatically
+
+requests
+
+# Shared helpers, installed straight from the repository
+# Tracks the main branch of the helpers repository
+
+mylib @ git+https://github.com/example-org/mylib.git@main

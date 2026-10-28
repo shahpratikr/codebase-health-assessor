@@ -1,0 +1,37 @@
+{
+  "id": "D2",
+  "description": "A Node.js monorepo pins three npm packages that have published advisories, in three package.json files, beside one that has none.",
+  "steps": [
+    "known_vulnerabilities"
+  ],
+  "expected": [
+    {
+      "step": "known_vulnerabilities",
+      "file": "package.json",
+      "line": 7,
+      "severity": "high",
+      "contains": "\"lodash\": \"4.17.15\"",
+      "package": "npm/lodash@4.17.15"
+    },
+    {
+      "step": "known_vulnerabilities",
+      "file": "services/api/package.json",
+      "line": 6,
+      "severity": "critical",
+      "contains": "\"minimist\": \"1.2.0\"",
+      "package": "npm/minimist@1.2.0"
+    },
+    {
+      "step": "known_vulnerabilities",
+      "file": "services/web/package.json",
+      "line": 6,
+      "severity": "high",
+      "contains": "\"node-fetch\": \"2.6.0\"",
+      "package": "npm/node-fetch@2.6.0"
+    }
+  ],
+  "criteria": [
+    "vuln_recall",
+    "no_fabricated_advisories"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "D5",
+  "description": "Two pinned packages that the OSV replay holds no answer for, so every lookup fails and must be reported as a limitation, not as a vulnerability.",
+  "steps": [
+    "known_vulnerabilities"
+  ],
+  "expected": [],
+  "limitations": [
+    "django",
+    "pillow"
+  ],
+  "criteria": [
+    "clean_precision",
+    "no_fabricated_advisories"
+  ]
+}

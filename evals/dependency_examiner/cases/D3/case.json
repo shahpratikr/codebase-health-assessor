@@ -1,0 +1,47 @@
+{
+  "id": "D3",
+  "description": "Unpinned and open-range dependencies, a git dependency and a local path dependency, with no lockfile beside either manifest.",
+  "steps": [
+    "dependency_hygiene"
+  ],
+  "expected": [
+    {
+      "step": "dependency_hygiene",
+      "file": "requirements.txt",
+      "line": 2,
+      "severity": "medium",
+      "contains": "flask>=2.0"
+    },
+    {
+      "step": "dependency_hygiene",
+      "file": "requirements.txt",
+      "line": 7,
+      "severity": "medium",
+      "contains": "requests"
+    },
+    {
+      "step": "dependency_hygiene",
+      "file": "requirements.txt",
+      "line": 12,
+      "severity": "medium",
+      "contains": "git+https://github.com/example-org/mylib.git"
+    },
+    {
+      "step": "dependency_hygiene",
+      "file": "package.json",
+      "line": 6,
+      "severity": "medium",
+      "contains": "\"express\": \"*\""
+    },
+    {
+      "step": "dependency_hygiene",
+      "file": "package.json",
+      "line": 11,
+      "severity": "medium",
+      "contains": "\"internal-utils\": \"file:../utils\""
+    }
+  ],
+  "criteria": [
+    "hygiene_recall"
+  ]
+}

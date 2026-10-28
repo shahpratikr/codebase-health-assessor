@@ -1,0 +1,3 @@
+# Legacy intranet portal.
+django==2.2.0
+pillow==8.0.0

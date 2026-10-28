@@ -18,11 +18,13 @@ from anthropic.types.beta import BetaMessage
 from assessor import audit, config, llm, manifest, sandbox
 from assessor.agents import runner
 from assessor.llm import NoCredentialsError
+from assessor.tools import deps
 from evals import run, scoring
 
 NOW = datetime(2026, 10, 28, 9, 30, tzinfo=UTC)
 MANIFESTS = manifest.load_manifests()
 SECURITY = MANIFESTS["security_examiner"]
+DEPENDENCY = MANIFESTS["dependency_examiner"]
 MARKER = "agent-written-text-marker"
 SONNET = "claude-sonnet-5-5"
 STEPS_BY_CASE = {
@@ -642,8 +644,8 @@ def test_the_injection_scan_detects_planted_text(text, found):
     assert bool(ADDRESSED.search(text)) is found
 
 
-ALLOWED_IMPORTS = {"assessor.config", "collections.abc", "posixpath", "statistics"}
-ALLOWED_CONFIG = {"COMPARISONS", "FAILING_SEVERITIES", "FINDING_SEVERITIES"}
+ALLOWED_IMPORTS = {"assessor.config", "collections.abc", "posixpath", "re", "statistics"}
+ALLOWED_CONFIG = {"ADVISORY_STEP", "COMPARISONS", "FAILING_SEVERITIES", "FINDING_SEVERITIES"}
 
 
 def _determinism_problems(source):
@@ -691,7 +693,8 @@ def test_the_determinism_scan_detects_a_planted_source_of_nondeterminism(source)
 
 
 def test_the_determinism_scan_accepts_the_config_sets_the_scorers_read():
-    source = "from assessor import config\nconfig.FINDING_SEVERITIES\nconfig.FAILING_SEVERITIES\nconfig.COMPARISONS"
+    names = ("FINDING_SEVERITIES", "FAILING_SEVERITIES", "COMPARISONS", "ADVISORY_STEP")
+    source = "from assessor import config\n" + "\n".join(f"config.{name}" for name in names)
     assert _determinism_problems(source) == []
 
 
@@ -914,7 +917,8 @@ def _oracle(eval_set, runs=1, broken=(), workflow="security_examiner", failures=
 
 def _shipped_copy(tmp_path):
     root = tmp_path / "evals"
-    shutil.copytree(run.EVALS_DIR / "security_examiner", root / "security_examiner")
+    for agent in ("security_examiner", "dependency_examiner"):
+        shutil.copytree(run.EVALS_DIR / agent, root / agent)
     return root
 
 
@@ -1136,9 +1140,13 @@ def test_main_prints_one_line_per_criterion_with_its_outcome(evaluate, capsys):
 
 
 def test_all_runs_every_registered_agent(evaluate):
-    code, _, root = evaluate(_oracle(_load(run.EVALS_DIR)), agent="all")
-    assert code == 0
-    assert {path.stem for path in (root / "results").glob("*.json")} == set(run.AGENTS)
+    script = [*_oracle(_load(run.EVALS_DIR)), *_dependency_oracle(_load_dependency())]
+    code, client, root = evaluate(script, agent="all")
+    assert (code, client.script) == (0, [])
+    assert {path.stem for path in (root / "results").glob("*.json")} == set(run.AGENTS) == {
+        "security_examiner",
+        "dependency_examiner",
+    }
 
 
 def _with_a_second_agent(monkeypatch, tmp_path):
@@ -1155,10 +1163,15 @@ def _with_a_second_agent(monkeypatch, tmp_path):
 def test_a_missed_threshold_of_any_agent_fails_an_all_run(evaluate, monkeypatch, tmp_path):
     root = _with_a_second_agent(monkeypatch, tmp_path)
     eval_set = _load(run.EVALS_DIR)
-    script = [*_oracle(eval_set, broken={("S1", "secrets")}), *_oracle(eval_set, workflow="second_examiner")]
+    script = [
+        *_oracle(eval_set, broken={("S1", "secrets")}),
+        *_dependency_oracle(_load_dependency()),
+        *_oracle(eval_set, workflow="second_examiner"),
+    ]
     code, _, _ = evaluate(script, agent="all", root=root)
     assert code == 1
-    assert {path.stem for path in (root / "results").glob("*.json")} == {"security_examiner", "second_examiner"}
+    stems = {path.stem for path in (root / "results").glob("*.json")}
+    assert stems == {"security_examiner", "dependency_examiner", "second_examiner"}
 
 
 def test_a_second_run_replaces_the_results_of_the_first(evaluate):
@@ -1410,3 +1423,1224 @@ def test_the_module_entry_point_exits_with_the_code_main_returns(monkeypatch, ca
         runpy.run_module("evals.run", run_name="__main__")
     assert raised.value.code == 2
     assert "evals.run: no Anthropic credentials" in capsys.readouterr().err
+
+
+VULNERABLE, HYGIENE = "known_vulnerabilities", "dependency_hygiene"
+DEPENDENCY_DIR = run.EVALS_DIR / "dependency_examiner"
+DEPENDENCY_STEPS_BY_CASE = {
+    "D1": [VULNERABLE],
+    "D2": [VULNERABLE],
+    "D3": [HYGIENE],
+    "D4": [VULNERABLE, HYGIENE],
+    "D5": [VULNERABLE],
+}
+DEPENDENCY_CRITERIA_BY_CASE = {
+    "D1": ["vuln_recall", "no_fabricated_advisories"],
+    "D2": ["vuln_recall", "no_fabricated_advisories"],
+    "D3": ["hygiene_recall"],
+    "D4": ["clean_precision", "no_fabricated_advisories"],
+    "D5": ["clean_precision", "no_fabricated_advisories"],
+}
+DEPENDENCY_EXPECTED_BY_CASE = {
+    "D1": [
+        (VULNERABLE, "requirements.txt", 3, "high", "PyPI/requests@2.19.0"),
+        (VULNERABLE, "reports/requirements.txt", 2, "critical", "PyPI/pyyaml@5.3"),
+        (VULNERABLE, "worker/requirements.txt", 2, "high", "PyPI/markdown@3.0"),
+    ],
+    "D2": [
+        (VULNERABLE, "package.json", 7, "high", "npm/lodash@4.17.15"),
+        (VULNERABLE, "services/api/package.json", 6, "critical", "npm/minimist@1.2.0"),
+        (VULNERABLE, "services/web/package.json", 6, "high", "npm/node-fetch@2.6.0"),
+    ],
+    "D3": [
+        (HYGIENE, "requirements.txt", 2, "medium", None),
+        (HYGIENE, "requirements.txt", 7, "medium", None),
+        (HYGIENE, "requirements.txt", 12, "medium", None),
+        (HYGIENE, "package.json", 6, "medium", None),
+        (HYGIENE, "package.json", 11, "medium", None),
+    ],
+    "D4": [],
+    "D5": [],
+}
+DEPENDENCY_THRESHOLDS = {
+    "vuln_recall": 0.8,
+    "no_fabricated_advisories": 1.0,
+    "hygiene_recall": 0.8,
+    "clean_precision": 1.0,
+}
+# D3 looks no package up; D5 pins packages the replay must not answer.
+LOOKUP_CASES, UNAVAILABLE_CASE = ("D1", "D2", "D4"), "D5"
+ADVISORIES = {
+    "PyPI/requests@2.19.0": ["CVE-2018-18074", "GHSA-x84v-xcm2-53pg", "PYSEC-2018-28"],
+    "PyPI/pyyaml@5.3": ["CVE-2020-14343", "GHSA-8q59-q68h-6hv4"],
+    "PyPI/markdown@3.0": ["GHSA-5wmx-573v-2qwq"],
+    "PyPI/structlog@24.4.0": [],
+}
+
+
+def _pin(file="requirements.txt", line=3, package="PyPI/requests@2.19.0"):
+    return {"step": VULNERABLE, "file": file, "line": line, "severity": "high", "contains": "x", "package": package}
+
+
+def _smell(file="requirements.txt", line=2):
+    return {"step": HYGIENE, "file": file, "line": line, "severity": "medium", "contains": "x"}
+
+
+def _dependency_case(*items, **more):
+    return {"expected": list(items), "advisories": ADVISORIES, **more}
+
+
+def _examined(findings=(), limitations=()):
+    return {"findings": list(findings), "limitations": list(limitations)}
+
+
+def _cited(*findings, step=VULNERABLE, severity="high"):
+    """Return the accepted outputs of one step, holding a finding per (file, line, advisory IDs) tuple."""
+    reported = (
+        {"file": file, "line": line, "severity": severity, "advisory_ids": list(ids)} for file, line, ids in findings
+    )
+    return {step: _examined(reported)}
+
+
+@pytest.mark.parametrize("cited", ADVISORIES["PyPI/requests@2.19.0"])
+def test_a_vulnerable_pin_is_recalled_when_its_finding_cites_an_id_or_alias_recorded_for_it(cited):
+    assert scoring.vuln_recall(_dependency_case(_pin()), _cited(("requirements.txt", 3, [cited]))) == 1.0
+
+
+@pytest.mark.parametrize("offset", [-2, -1, 0, 1, 2])
+def test_a_vulnerable_pin_is_recalled_from_a_finding_within_two_lines(offset):
+    outputs = _cited(("requirements.txt", 3 + offset, ["GHSA-x84v-xcm2-53pg"]))
+    assert scoring.vuln_recall(_dependency_case(_pin()), outputs) == 1.0
+
+
+@pytest.mark.parametrize("offset", [-3, 3])
+def test_a_vulnerable_pin_is_not_recalled_from_a_finding_three_lines_away(offset):
+    outputs = _cited(("requirements.txt", 3 + offset, ["GHSA-x84v-xcm2-53pg"]))
+    assert scoring.vuln_recall(_dependency_case(_pin()), outputs) == 0.0
+
+
+@pytest.mark.parametrize(
+    "cited",
+    [[], ["GHSA-8q59-q68h-6hv4"], ["GHSA-0000-0000-0000"]],
+    ids=["no-advisory", "another-packages-advisory", "unrecorded-advisory"],
+)
+def test_a_vulnerable_pin_is_not_recalled_without_an_advisory_recorded_for_it(cited):
+    assert scoring.vuln_recall(_dependency_case(_pin()), _cited(("requirements.txt", 3, cited))) == 0.0
+
+
+def test_one_recorded_advisory_among_unrecorded_ones_is_enough_to_recall_a_pin():
+    outputs = _cited(("requirements.txt", 3, ["GHSA-0000-0000-0000", "GHSA-x84v-xcm2-53pg"]))
+    assert scoring.vuln_recall(_dependency_case(_pin()), outputs) == 1.0
+
+
+def test_a_second_finding_near_a_pin_that_cites_no_advisory_does_not_undo_its_recall():
+    outputs = _cited(("requirements.txt", 3, ["GHSA-x84v-xcm2-53pg"]), ("requirements.txt", 4, []))
+    assert scoring.vuln_recall(_dependency_case(_pin()), outputs) == 1.0
+
+
+def test_a_vulnerable_pin_is_not_recalled_by_a_finding_in_another_file_or_of_another_step():
+    cited = ["GHSA-x84v-xcm2-53pg"]
+    assert scoring.vuln_recall(_dependency_case(_pin()), _cited(("worker/requirements.txt", 3, cited))) == 0.0
+    assert scoring.vuln_recall(_dependency_case(_pin()), _cited(("requirements.txt", 3, cited), step=HYGIENE)) == 0.0
+
+
+def test_vulnerability_recall_is_the_share_of_pins_reported():
+    case = _dependency_case(
+        _pin(),
+        _pin("reports/requirements.txt", 2, "PyPI/pyyaml@5.3"),
+        _pin("worker/requirements.txt", 2, "PyPI/markdown@3.0"),
+    )
+    outputs = _cited(
+        ("requirements.txt", 3, ["GHSA-x84v-xcm2-53pg"]), ("worker/requirements.txt", 2, ["GHSA-5wmx-573v-2qwq"])
+    )
+    assert scoring.vuln_recall(case, outputs) == pytest.approx(2 / 3)
+
+
+def test_vulnerability_recall_counts_only_the_vulnerability_step_items_of_a_case():
+    case = _dependency_case(_pin(), _smell("requirements.txt", 20))
+    outputs = {**_cited(("requirements.txt", 3, ["GHSA-x84v-xcm2-53pg"])), HYGIENE: _examined()}
+    assert scoring.vuln_recall(case, outputs) == 1.0
+    assert scoring.vuln_recall(_dependency_case(_smell()), {}) == 1.0
+
+
+@pytest.mark.parametrize("offset", [-2, -1, 0, 1, 2])
+def test_a_hygiene_issue_is_recalled_from_a_finding_of_its_step_within_two_lines(offset):
+    outputs = _cited(("requirements.txt", 2 + offset, []), step=HYGIENE, severity="medium")
+    assert scoring.hygiene_recall(_dependency_case(_smell()), outputs) == 1.0
+
+
+@pytest.mark.parametrize("offset", [-3, 3])
+def test_a_hygiene_issue_is_not_recalled_from_a_finding_three_lines_away(offset):
+    outputs = _cited(("requirements.txt", 5 + offset, []), step=HYGIENE, severity="medium")
+    assert scoring.hygiene_recall(_dependency_case(_smell("requirements.txt", 5)), outputs) == 0.0
+
+
+def test_a_hygiene_issue_is_not_recalled_by_a_finding_of_the_vulnerability_step():
+    assert scoring.hygiene_recall(_dependency_case(_smell()), _cited(("requirements.txt", 2, []))) == 0.0
+
+
+def test_hygiene_recall_is_the_share_of_issues_reported_and_ignores_vulnerable_pins():
+    smells = [("requirements.txt", 2), ("requirements.txt", 7), ("requirements.txt", 12), ("package.json", 6)]
+    case = _dependency_case(_pin(), *[_smell(*place) for place in smells])
+    outputs = _cited(*[(file, line, []) for file, line in smells[:3]], step=HYGIENE, severity="medium")
+    assert scoring.hygiene_recall(case, outputs) == 0.75
+    assert scoring.hygiene_recall(_dependency_case(_pin()), {}) == 1.0
+
+
+def test_citing_only_recorded_ids_and_aliases_fabricates_nothing():
+    outputs = _cited(("requirements.txt", 3, ["GHSA-x84v-xcm2-53pg", "CVE-2018-18074"]))
+    assert scoring.no_fabricated_advisories(_dependency_case(), outputs) == 1.0
+
+
+def test_one_unrecorded_id_among_recorded_ones_is_fabrication():
+    outputs = _cited(("requirements.txt", 3, ["GHSA-x84v-xcm2-53pg", "GHSA-0000-0000-0000"]))
+    assert scoring.no_fabricated_advisories(_dependency_case(), outputs) == 0.0
+
+
+def test_a_report_that_cites_nothing_fabricates_nothing():
+    assert scoring.no_fabricated_advisories(_dependency_case(), _cited(("requirements.txt", 3, []))) == 1.0
+    assert scoring.no_fabricated_advisories(_dependency_case(), {VULNERABLE: _examined()}) == 1.0
+
+
+def test_an_id_recorded_for_another_package_is_not_fabrication():
+    outputs = _cited(("requirements.txt", 3, ["GHSA-8q59-q68h-6hv4"]))
+    assert scoring.no_fabricated_advisories(_dependency_case(_pin()), outputs) == 1.0
+
+
+def test_fabrication_is_looked_for_in_every_examined_step():
+    outputs = {**_cited(("requirements.txt", 3, ["GHSA-x84v-xcm2-53pg"])), **_cited(("a", 1, ["GHSA-0"]), step=HYGIENE)}
+    assert scoring.no_fabricated_advisories(_dependency_case(), outputs) == 0.0
+
+
+def test_an_id_is_compared_exactly():
+    outputs = _cited(("requirements.txt", 3, ["ghsa-x84v-xcm2-53pg"]))
+    assert scoring.no_fabricated_advisories(_dependency_case(), outputs) == 0.0
+
+
+@pytest.mark.parametrize(("severity", "score"), [("critical", 0.0), ("high", 0.0), ("medium", 1.0), ("low", 1.0)])
+def test_dependency_clean_precision_fails_only_on_a_critical_or_high_finding(severity, score):
+    outputs = _cited(("requirements.txt", 2, []), severity=severity)
+    assert scoring.dependency_clean_precision(_dependency_case(), outputs) == score
+
+
+def test_dependency_clean_precision_asks_for_no_limitation_of_a_case_that_lists_none():
+    assert scoring.dependency_clean_precision({}, {VULNERABLE: {"findings": []}}) == 1.0
+
+
+def test_the_limitations_of_every_step_together_can_name_the_unchecked_packages_in_any_letter_case():
+    case = {"limitations": ["django", "pillow"]}
+    outputs = {
+        VULNERABLE: _examined(limitations=["The OSV lookup for Django 2.2.0 failed."]),
+        HYGIENE: _examined(limitations=["PILLOW 8.0.0 was not checked."]),
+    }
+    assert scoring.dependency_clean_precision(case, outputs) == 1.0
+
+
+@pytest.mark.parametrize(
+    "outputs",
+    [
+        {VULNERABLE: _examined(limitations=["The OSV lookup for Django 2.2.0 failed."])},
+        {VULNERABLE: _examined()},
+        {VULNERABLE: _examined(limitations=["Some lookups failed."])},
+    ],
+    ids=["one-package-unnamed", "no-limitation", "no-package-named"],
+)
+def test_an_unchecked_package_that_no_limitation_names_scores_zero(outputs):
+    assert scoring.dependency_clean_precision({"limitations": ["django", "pillow"]}, outputs) == 0.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "djangorestframework and pillow-heif were skipped",
+        "my-django-fork 1.0 and pillowfight were not looked up",
+        "mydjango and apillow failed",
+        "my-django and my-pillow failed",
+        "django-rest and pillow-heif were skipped",
+        "djangorestframework and pillowfight failed",
+    ],
+)
+def test_a_name_inside_a_longer_package_name_does_not_count_as_naming_the_package(text):
+    outputs = {VULNERABLE: _examined(limitations=[text])}
+    assert scoring.dependency_clean_precision({"limitations": ["django", "pillow"]}, outputs) == 0.0
+
+
+@pytest.mark.parametrize(("text", "score"), [("zope.interface failed", 1.0), ("zopexinterface failed", 0.0)])
+def test_a_dot_in_a_package_name_matches_only_a_dot(text, score):
+    outputs = {VULNERABLE: _examined(limitations=[text])}
+    assert scoring.dependency_clean_precision({"limitations": ["zope.interface"]}, outputs) == score
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "django==2.2.0 and pillow==8.0.0 failed",
+        "Lookups for (django) and pillow, failed.",
+        "DJANGO\tand\nPillow: failed",
+    ],
+)
+def test_a_name_between_punctuation_or_whitespace_counts_as_naming_the_package(text):
+    outputs = {VULNERABLE: _examined(limitations=[text])}
+    assert scoring.dependency_clean_precision({"limitations": ["django", "pillow"]}, outputs) == 1.0
+
+
+@pytest.mark.parametrize("severity", ["critical", "high", "medium", "low"])
+def test_a_vulnerability_reported_where_every_lookup_must_fail_scores_zero_at_any_severity(severity):
+    finding = {"file": "requirements.txt", "line": 2, "severity": severity, "advisory_ids": []}
+    outputs = {VULNERABLE: _examined([finding], ["django and pillow were not checked"])}
+    assert scoring.dependency_clean_precision({"limitations": ["django", "pillow"]}, outputs) == 0.0
+
+
+def test_a_finding_of_another_step_is_no_vulnerability_where_every_lookup_must_fail():
+    finding = {"file": "requirements.txt", "line": 2, "severity": "low", "advisory_ids": []}
+    outputs = {VULNERABLE: _examined(limitations=["django and pillow were not checked"]), HYGIENE: _examined([finding])}
+    assert scoring.dependency_clean_precision({"limitations": ["django", "pillow"]}, outputs) == 1.0
+
+
+def test_a_medium_finding_is_allowed_in_a_case_that_names_no_unchecked_package():
+    assert scoring.dependency_clean_precision({}, _cited(("requirements.txt", 2, []), severity="medium")) == 1.0
+
+
+def test_a_serious_finding_scores_zero_even_when_every_limitation_is_named():
+    outputs = {
+        VULNERABLE: _examined(
+            [{"file": "requirements.txt", "line": 2, "severity": "high", "advisory_ids": []}],
+            ["django and pillow were not checked"],
+        )
+    }
+    assert scoring.dependency_clean_precision({"limitations": ["django", "pillow"]}, outputs) == 0.0
+
+
+def test_each_dependency_criterion_is_scored_by_its_own_function():
+    scorers = scoring.SCORERS["dependency_examiner"]
+    assert list(scorers) == list(DEPENDENCY_THRESHOLDS)
+    assert scorers == {
+        "vuln_recall": scoring.vuln_recall,
+        "no_fabricated_advisories": scoring.no_fabricated_advisories,
+        "hygiene_recall": scoring.hygiene_recall,
+        "clean_precision": scoring.dependency_clean_precision,
+    }
+
+
+def test_a_package_name_in_the_case_file_matches_a_limitation_in_any_letter_case():
+    outputs = {VULNERABLE: _examined(limitations=["the osv lookup for django failed"])}
+    assert scoring.dependency_clean_precision({"limitations": ["Django"]}, outputs) == 1.0
+
+
+def _dependency_copy(tmp_path):
+    root = tmp_path / "evals"
+    shutil.copytree(DEPENDENCY_DIR, root / "dependency_examiner")
+    return root
+
+
+def _load_dependency(root=run.EVALS_DIR):
+    return run.load_eval_set("dependency_examiner", MANIFESTS, root)
+
+
+def _edit(root, name, change):
+    path = root / "dependency_examiner" / name
+    data = json.loads(path.read_text(encoding="utf-8"))
+    change(data)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_dependency_set_loads_with_its_replay_and_the_identifiers_recorded_in_it(tmp_path):
+    root = _dependency_copy(tmp_path)
+    case = _load_dependency(root).cases[0]
+    assert case["id"] == "D1"
+    assert case["replay"] == root / "dependency_examiner" / "osv_replay.json"
+    recorded = case["advisories"]
+    assert {"GHSA-x84v-xcm2-53pg", "CVE-2018-18074", "PYSEC-2018-28"} <= set(recorded["PyPI/requests@2.19.0"])
+    assert recorded["PyPI/structlog@24.4.0"] == []
+    assert all(identifiers == sorted(set(identifiers)) for identifiers in recorded.values())
+
+
+def test_a_set_of_an_agent_that_does_not_query_osv_gets_no_replay_and_no_advisories():
+    assert all("replay" not in case and "advisories" not in case for case in _load(run.EVALS_DIR).cases)
+
+
+BROKEN_DEPENDENCY_CASES = [
+    (lambda case: case["expected"][0].pop("package"), "D1", "must name its package"),
+    (lambda case: case["expected"][0].update(package="PyPI/requests@9.9.9"), "D1", "has no response in"),
+    (lambda case: case["expected"][0].update(package="PyPI/structlog@24.4.0"), "D1", "has no advisory in"),
+    (lambda case: case["expected"][0].update(package=7), "D1", "expected/0/package"),
+    (
+        lambda case: case["expected"][0].update(package="PyPI/requests@2.19.0"),
+        "D3",
+        "names a package, not 'PyPI/requests@2.19.0'",
+    ),
+    (lambda case: case.update(limitations=[]), "D5", "limitations"),
+    (lambda case: case.update(limitations=["django", "django"]), "D5", "limitations"),
+    (lambda case: case.update(limitations=[""]), "D5", "limitations/0"),
+    (lambda case: case.update(limitations=[" "]), "D5", "limitations/0"),
+    (lambda case: case.update(limitations=["two words"]), "D5", "limitations/0"),
+    (lambda case: case.update(limitations=["requests"]), "D5", "limitation 'requests' names a package that"),
+    (lambda case: case.update(limitations=["Requests"]), "D5", "limitation 'Requests' names a package that"),
+    (lambda case: case.update(limitations=["django\u200b"]), "D5", "limitations/0"),
+    (lambda case: case.update(limitations=["djángo"]), "D5", "limitations/0"),
+    (
+        lambda case: case.update(limitations=["django"]),
+        "D1",
+        "expects every lookup to fail, so it cannot expect the vulnerable pin 'PyPI/requests@2.19.0'",
+    ),
+    (lambda case: case.update(limitations=["Lodash"]), "D5", "limitation 'Lodash' names a package that"),
+    (
+        lambda case: (case["expected"][0].update(package="PyPI/requests@2.19.0"), case.update(limitations=["django"])),
+        "D3",
+        "only a known_vulnerabilities finding names a package, not 'PyPI/requests@2.19.0'",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "case_id", "fragment"),
+    BROKEN_DEPENDENCY_CASES,
+    ids=[
+        "no-package-on-a-vulnerable-pin",
+        "package-the-replay-lacks",
+        "package-with-no-advisory",
+        "package-of-the-wrong-type",
+        "package-on-a-hygiene-issue",
+        "empty-limitations",
+        "repeated-limitation",
+        "blank-limitation",
+        "whitespace-limitation",
+        "limitation-of-two-words",
+        "limitation-naming-a-package-the-replay-answers",
+        "limitation-naming-it-in-another-letter-case",
+        "limitation-with-an-invisible-character",
+        "limitation-with-a-non-ascii-letter",
+        "limitations-in-a-case-that-expects-a-vulnerable-pin",
+        "limitation-naming-an-npm-package-in-another-letter-case",
+        "package-on-a-hygiene-issue-of-a-case-with-limitations",
+    ],
+)
+def test_a_dependency_case_that_breaks_a_rule_is_refused_naming_its_file(tmp_path, mutate, case_id, fragment):
+    root = _dependency_copy(tmp_path)
+    _edit(root, f"cases/{case_id}/case.json", mutate)
+    with pytest.raises(ValueError, match=re.escape(fragment)) as raised:
+        _load_dependency(root)
+    assert str(root / "dependency_examiner" / "cases" / case_id / "case.json") in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("line", "package"),
+    [
+        ("requests==2.20.0", "PyPI/requests@2.19.0"),
+        ("other==5.3", "PyPI/pyyaml@5.3"),
+        ("markdown-extra==3.0", "PyPI/markdown@3.0"),
+        ("markdown==3.0.1", "PyPI/markdown@3.0"),
+        ("python-markdown==3.0", "PyPI/markdown@3.0"),
+        ("markdown==1.3.0", "PyPI/markdown@3.0"),
+        ("requests==2_19_0", "PyPI/requests@2.19.0"),
+        ("xmarkdown==3.0", "PyPI/markdown@3.0"),
+        ("markdownx==3.0", "PyPI/markdown@3.0"),
+        ("markdown==13.0", "PyPI/markdown@3.0"),
+        ("markdown==3.05", "PyPI/markdown@3.0"),
+        ("pyyaml==5.3.post1", "PyPI/pyyaml@5.3"),
+        ("pyyaml==5.3+local", "PyPI/pyyaml@5.3"),
+    ],
+    ids=[
+        "version-the-line-lacks",
+        "name-the-line-lacks",
+        "name-only-as-a-prefix",
+        "version-only-as-a-prefix",
+        "name-only-as-a-suffix",
+        "version-only-as-a-suffix",
+        "dot-in-the-version-is-no-wildcard",
+        "name-with-a-letter-before-it",
+        "name-with-a-letter-after-it",
+        "version-with-a-digit-before-it",
+        "version-with-a-digit-after-it",
+        "version-with-a-post-release-suffix",
+        "version-with-a-local-suffix",
+    ],
+)
+def test_a_package_that_the_expected_line_does_not_declare_is_refused(tmp_path, line, package):
+    root = _dependency_copy(tmp_path)
+    manifest_file = root / "dependency_examiner" / "cases" / "D1" / "repo" / "requirements.txt"
+    text = manifest_file.read_text(encoding="utf-8").replace("requests==2.19.0", line)
+    manifest_file.write_text(text, encoding="utf-8")
+    _edit(root, "cases/D1/case.json", lambda case: case["expected"][0].update(contains=line, package=package))
+    with pytest.raises(ValueError, match=re.escape(f"does not name package {package!r}")):
+        _load_dependency(root)
+
+
+SCOPED = "npm/@acme/widgets@1.2.3"
+
+
+def _npm_set(tmp_path, key, line):
+    """Return the root of a copy of the dependency set whose D2 expects the package key on the package.json line."""
+    root = _dependency_copy(tmp_path)
+    advisory = {"vulns": [{"id": "GHSA-aaaa-bbbb-cccc"}]}
+    _edit(root, "osv_replay.json", lambda recorded: recorded.update({key: advisory}))
+    manifest_file = root / "dependency_examiner" / "cases" / "D2" / "repo" / "package.json"
+    text = manifest_file.read_text(encoding="utf-8").replace('    "lodash": "4.17.15"', line)
+    manifest_file.write_text(text, encoding="utf-8")
+    _edit(root, "cases/D2/case.json", lambda case: case["expected"][0].update(contains=line.strip(), package=key))
+    return root
+
+
+def test_a_scoped_npm_package_is_named_by_the_line_that_declares_it(tmp_path):
+    root = _npm_set(tmp_path, SCOPED, '    "@acme/widgets": "1.2.3"')
+    assert _load_dependency(root).cases[1]["expected"][0]["package"] == SCOPED
+
+
+@pytest.mark.parametrize(
+    ("key", "line"),
+    [
+        (SCOPED, '    "@acme/widgets": "9.9.9"'),
+        ("npm/widgets@1.2.3", '    "@acme/widgets": "1.2.3"'),
+        ("npm/acme@1.2.3", '    "@acme/widgets": "1.2.3"'),
+        ("npm/lodash@4.17.15", '    "lodash.merge": "4.17.15"'),
+    ],
+    ids=["another-version", "the-name-without-its-scope", "the-scope-alone", "the-name-as-a-dotted-prefix"],
+)
+def test_an_npm_package_is_refused_when_its_line_declares_something_else(tmp_path, key, line):
+    root = _npm_set(tmp_path, key, line)
+    with pytest.raises(ValueError, match=re.escape(f"does not name package {key!r}")):
+        _load_dependency(root)
+
+
+BROKEN_REPLAYS = [
+    ("not json", "not valid JSON"),
+    ("[]", "is not of type 'object'"),
+    ('{"requests==2.19.0": {}}', "does not match"),
+    ('{"pypi/requests@2.19.0": {}}', "does not match"),
+    ('{"PyPI/requests@2.19.0": []}', "PyPI/requests@2.19.0"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"summary": "x"}]}}', "'id' is a required property"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": "GHSA-x", "aliases": [7]}]}}', "aliases"),
+    ('{"PyPI/requests@2.19.0": {}, "PyPI/requests@2.19.0": {}}', "duplicate key"),
+    ('{"PyPI/requests@2.19.0": {"vulns": "x"}}', "is not of type 'array'"),
+    ('{"PyPI/requests@2.19.0": {"vulns": ["GHSA-x"]}}', "is not of type 'object'"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": ""}]}}', "does not match"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": " "}]}}', "does not match"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": "GHSA-x\\n"}]}}', "does not match"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": "GHSA-x", "aliases": "CVE-1"}]}}', "is not of type 'array'"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": "GHSA-x", "aliases": [" "]}]}}', "does not match"),
+    ('{"PyPI/requests@2.19.0": {"vulns": [{"id": "GHSA-x\\u200b"}]}}', "does not match"),
+    ('{"PyPI/requests\\u200b@2.19.0": {}}', "does not match"),
+    ('{"PyPI/requests@2.19.0\\n": {}}', "does not match"),
+    ('{"PyPI/a@@": {}}', "does not match"),
+    ('{"npm/@@1": {}}', "does not match"),
+    ('{"PyPI/a@": {}}', "does not match"),
+    ('{"PyPI/@1": {}}', "does not match"),
+    ('{"PyPI/re quests@2.19.0": {}}', "does not match"),
+    ('{"PyPI/PyYAML@5.3": {}}', "not in normalised form"),
+    ('{"PyPI/typing_extensions@4.0.0": {}}', "not in normalised form"),
+]
+
+
+@pytest.mark.parametrize(
+    ("text", "fragment"),
+    BROKEN_REPLAYS,
+    ids=[
+        "not-json",
+        "not-an-object",
+        "key-without-ecosystem",
+        "key-of-another-letter-case",
+        "response-not-an-object",
+        "advisory-without-id",
+        "alias-of-the-wrong-type",
+        "repeated-key",
+        "vulns-not-an-array",
+        "advisory-not-an-object",
+        "blank-id",
+        "whitespace-id",
+        "id-with-a-newline",
+        "aliases-not-an-array",
+        "whitespace-alias",
+        "id-with-an-invisible-character",
+        "key-with-an-invisible-character",
+        "key-with-a-newline",
+        "key-with-an-empty-version-after-a-doubled-at",
+        "scoped-key-with-an-empty-name-and-version",
+        "key-without-a-version",
+        "key-without-a-name",
+        "key-with-whitespace",
+        "pypi-name-not-lowercase",
+        "pypi-name-with-an-underscore",
+    ],
+)
+def test_a_replay_that_breaks_a_rule_is_refused_naming_its_file(tmp_path, text, fragment):
+    root = _dependency_copy(tmp_path)
+    replay = root / "dependency_examiner" / "osv_replay.json"
+    replay.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=re.escape(fragment)) as raised:
+        _load_dependency(root)
+    assert str(replay) in str(raised.value)
+
+
+def test_a_limitation_is_refused_under_any_spelling_of_an_answered_pypi_package_but_an_npm_name_is_exact(tmp_path):
+    root = _dependency_copy(tmp_path)
+    _edit(root, "osv_replay.json", lambda recorded: recorded.update({"PyPI/typing-extensions@4.0.0": {}}))
+    _edit(root, "cases/D5/case.json", lambda case: case.update(limitations=["Typing_Extensions"]))
+    with pytest.raises(ValueError, match="limitation 'Typing_Extensions' names a package that"):
+        _load_dependency(root)
+    _edit(root, "osv_replay.json", lambda recorded: recorded.update({"npm/left-pad@1.3.0": {}}))
+    _edit(root, "cases/D5/case.json", lambda case: case.update(limitations=["left_pad"]))
+    assert _load_dependency(root).cases[4]["limitations"] == ["left_pad"]
+    _edit(root, "osv_replay.json", lambda recorded: recorded.update({"npm/JSONStream@1.3.5": {}}))
+    _edit(root, "cases/D5/case.json", lambda case: case.update(limitations=["jsonstream"]))
+    with pytest.raises(ValueError, match="limitation 'jsonstream' names a package that"):
+        _load_dependency(root)
+
+
+def test_a_dependency_set_without_its_replay_raises_the_os_error(tmp_path):
+    root = _dependency_copy(tmp_path)
+    (root / "dependency_examiner" / "osv_replay.json").unlink()
+    with pytest.raises(FileNotFoundError, match="osv_replay.json"):
+        _load_dependency(root)
+
+
+def test_a_dependency_set_without_its_replay_exits_2_before_credentials_are_looked_at(monkeypatch, tmp_path, capsys):
+    def refuse():
+        raise AssertionError("credentials were looked at")
+
+    monkeypatch.setattr(run, "make_client", refuse)
+    root = _dependency_copy(tmp_path)
+    (root / "dependency_examiner" / "osv_replay.json").unlink()
+    assert run.main(["--agent", "dependency_examiner", "--runs", "1"], evals_dir=root) == 2
+    assert "evals.run: " in capsys.readouterr().err
+    assert not (root / "results").exists()
+
+
+@pytest.mark.parametrize(
+    ("change", "shown"),
+    [
+        (lambda case: case["expected"][0].update(package="PyPI/requests@2.19.0"), "'PyPI/requests@2.19.0'"),
+        (lambda case: case.update(limitations=["requests"]), "limitations ['requests']"),
+        (
+            lambda case: (case["expected"][0].update(package="PyPI/requests@2.19.0"), case.update(limitations=["x"])),
+            "limitations ['x']",
+        ),
+    ],
+    ids=["package", "limitations", "both-name-the-limitations"],
+)
+def test_a_case_of_an_agent_that_does_not_query_osv_cannot_name_a_package_or_limitations(tmp_path, change, shown):
+    case = copy.deepcopy(SEEDED)
+    change(case)
+    root = _write_set(tmp_path, cases=[("A1", case), ("A2", CLEAN)])
+    with pytest.raises(ValueError, match="does not query OSV") as raised:
+        _load(root)
+    assert str(root / "security_examiner" / "cases" / "A1" / "case.json") in str(raised.value)
+    assert shown in str(raised.value)
+
+
+def _ghsa(case, item):
+    return next(identifier for identifier in case["advisories"][item["package"]] if identifier.startswith("GHSA-"))
+
+
+def _seeded(case, step):
+    """Return the (file, line, severity, advisory IDs) of each issue the case seeds in step, citing one recorded ID."""
+    return [
+        (item["file"], item["line"], item["severity"], [_ghsa(case, item)] if "package" in item else [])
+        for item in case["expected"]
+        if item["step"] == step
+    ]
+
+
+def _dependency_oracle(eval_set, runs=1, findings=None, limitations=None, broken=()):
+    """Return the script of a dependency examiner that reports exactly the seeded issues and names the packages whose
+    lookups must fail.
+
+    findings maps a (case, step) to the (file, line, severity, advisory IDs) tuples it reports instead and limitations
+    to the limitations it states instead; a (case, step) in broken answers with text that is not JSON.
+    """
+    findings, limitations = findings or {}, limitations or {}
+    script = []
+    for _ in range(runs):
+        for case in eval_set.cases:
+            for step in case["steps"]:
+                key = (case["id"], step)
+                if key in broken:
+                    script.append(_not_json())
+                    break
+                stated = limitations.get(key, [f"OSV lookup for {name} failed" for name in case.get("limitations", [])])
+                reported = [
+                    {**_finding(file, line, severity), "advisory_ids": ids}
+                    for file, line, severity, ids in findings.get(key, _seeded(case, step))
+                ]
+                script.append(_answer({**_examination(step, reported, "dependency_examiner"), "limitations": stated}))
+    return script
+
+
+def _evaluate_dependency(evaluate, tmp_path, script, runs=1):
+    return evaluate(script, runs=runs, agent="dependency_examiner", root=_dependency_copy(tmp_path))
+
+
+def _summary(root):
+    return {item["criterion"]: item for item in _results(root, "dependency_examiner")["summary"]}
+
+
+def _osv_call(ecosystem, name, version):
+    block = {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "query_osv",
+        "input": {"ecosystem": ecosystem, "name": name, "version": version},
+    }
+    return _message([block], "tool_use")
+
+
+def test_the_harness_asks_the_dependency_agent_for_every_step_of_every_case(evaluate, tmp_path):
+    script = _dependency_oracle(_load_dependency())
+    code, client, _ = _evaluate_dependency(evaluate, tmp_path, script)
+    assert (code, client.script) == (0, [])
+    assert _requested_steps(client) == [VULNERABLE, VULNERABLE, HYGIENE, VULNERABLE, HYGIENE, VULNERABLE]
+    for request in client.requests:
+        assert request["model"] == DEPENDENCY["model"]
+        assert [tool["name"] for tool in request["tools"]] == DEPENDENCY["tools"]
+        assert len(request["messages"]) == 1
+
+
+def test_a_dependency_agent_that_reports_exactly_the_seeded_issues_meets_every_threshold(evaluate, tmp_path):
+    code, _, root = _evaluate_dependency(evaluate, tmp_path, _dependency_oracle(_load_dependency(), runs=2), runs=2)
+    assert code == 0
+    results = _results(root, "dependency_examiner")
+    assert (results["agent"], results["model"], results["effort"]) == ("dependency_examiner", SONNET, "medium")
+    assert [item["criterion"] for item in results["summary"]] == list(DEPENDENCY_THRESHOLDS)
+    assert all(item["per_run_mean"] == [1.0, 1.0] and item["passed_all_runs"] for item in results["summary"])
+    scored = {entry["case_id"]: sorted(entry["scores"]) for entry in results["cases"] if entry["run"] == 1}
+    assert scored == {case: sorted(names) for case, names in DEPENDENCY_CRITERIA_BY_CASE.items()}
+
+
+def test_a_query_is_answered_from_the_replay_of_the_set_and_never_from_live_osv(evaluate, tmp_path, monkeypatch):
+    def live(query):
+        raise AssertionError("live OSV was asked")
+
+    monkeypatch.setattr(deps, "live_osv", live)
+    script = _dependency_oracle(_load_dependency())
+    script.insert(0, _osv_call("PyPI", "requests", "2.19.0"))
+    code, client, _ = _evaluate_dependency(evaluate, tmp_path, script)
+    assert code == 0
+    answer = client.requests[1]["messages"][-1]["content"][0]
+    assert answer["is_error"] is False
+    returned = {vuln["id"] for vuln in json.loads(answer["content"])["vulns"]}
+    assert {"GHSA-x84v-xcm2-53pg", "GHSA-9wx4-h78v-vm56"} <= returned
+
+
+def test_the_replay_of_the_case_answers_even_when_the_environment_names_another_replay(evaluate, tmp_path, monkeypatch):
+    other = tmp_path / "other.json"
+    other.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("ASSESSOR_OSV_REPLAY", str(other))
+    script = _dependency_oracle(_load_dependency())
+    script.insert(0, _osv_call("PyPI", "requests", "2.19.0"))
+    _, client, _ = _evaluate_dependency(evaluate, tmp_path, script)
+    answer = client.requests[1]["messages"][-1]["content"][0]
+    assert answer["is_error"] is False
+    assert json.loads(answer["content"])["vulns"]
+
+
+def test_a_package_the_replay_does_not_hold_is_a_tool_error_and_the_run_goes_on(evaluate, tmp_path):
+    script = _dependency_oracle(_load_dependency())
+    script.insert(len(script) - 1, _osv_call("PyPI", "django", "2.2.0"))
+    code, client, _ = _evaluate_dependency(evaluate, tmp_path, script)
+    assert code == 0
+    answer = client.requests[-1]["messages"][-1]["content"][0]
+    assert answer["is_error"] is True
+    assert "no recorded response" in answer["content"]
+
+
+@pytest.mark.parametrize("name", ["PyYAML", "PYYAML"])
+def test_a_pypi_name_is_looked_up_under_its_normalised_spelling_as_live_osv_does(evaluate, tmp_path, name):
+    script = _dependency_oracle(_load_dependency())
+    script.insert(0, _osv_call("PyPI", name, "5.3"))
+    _, client, _ = _evaluate_dependency(evaluate, tmp_path, script)
+    answer = client.requests[1]["messages"][-1]["content"][0]
+    returned = {vuln["id"] for vuln in json.loads(answer["content"])["vulns"]}
+    assert (answer["is_error"], "GHSA-8q59-q68h-6hv4" in returned) == (False, True)
+
+
+def test_runs_of_separators_in_a_pypi_name_are_one_hyphen_and_an_npm_name_is_looked_up_exactly(evaluate, tmp_path):
+    root = _dependency_copy(tmp_path)
+    advisory = {"vulns": [{"id": "GHSA-aaaa-bbbb-cccc"}]}
+    _edit(root, "osv_replay.json", lambda recorded: recorded.update({"PyPI/typing-extensions@4.0.0": advisory}))
+    script = _dependency_oracle(_load_dependency(root))
+    script[:0] = [_osv_call("PyPI", "Typing_.Extensions", "4.0.0"), _osv_call("npm", "Lodash", "4.17.15")]
+    _, client, _ = evaluate(script, agent="dependency_examiner", root=root)
+    pypi, npm = (client.requests[number]["messages"][-1]["content"][0] for number in (1, 2))
+    assert (pypi["is_error"], "GHSA-aaaa-bbbb-cccc" in pypi["content"]) == (False, True)
+    assert (npm["is_error"], "no recorded response" in npm["content"]) == (True, True)
+
+
+def test_a_case_without_its_replay_stops_the_agent_with_a_key_error_instead_of_reaching_live_osv():
+    case = {key: value for key, value in _load_dependency().cases[0].items() if key != "replay"}
+    with pytest.raises(KeyError, match="replay"):
+        run.AGENTS["dependency_examiner"](None, None, DEPENDENCY, case)
+
+
+def test_a_vulnerable_pin_the_replay_lacks_exits_2_before_credentials_are_looked_at(monkeypatch, tmp_path, capsys):
+    def refuse():
+        raise AssertionError("credentials were looked at")
+
+    monkeypatch.setattr(run, "make_client", refuse)
+    root = _dependency_copy(tmp_path)
+    _edit(root, "osv_replay.json", lambda recorded: recorded.pop("PyPI/requests@2.19.0"))
+    assert run.main(["--agent", "dependency_examiner", "--runs", "1"], evals_dir=root) == 2
+    assert "PyPI/requests@2.19.0" in capsys.readouterr().err
+    assert not (root / "results").exists()
+
+
+def test_an_agent_that_reports_a_vulnerability_of_any_severity_where_every_lookup_failed_fails_clean_precision(
+    evaluate, tmp_path
+):
+    findings = {("D5", VULNERABLE): [("requirements.txt", 2, "medium", [])]}
+    code, _, root = _evaluate_dependency(evaluate, tmp_path, _dependency_oracle(_load_dependency(), findings=findings))
+    precision = _summary(root)["clean_precision"]
+    assert (code, precision["per_run_mean"], precision["passed_all_runs"]) == (1, [0.5], False)
+
+
+def test_an_agent_that_cites_advisories_nobody_recorded_fails_the_run(evaluate, tmp_path, capsys):
+    findings = {("D1", VULNERABLE): [("requirements.txt", 3, "high", ["GHSA-0000-0000-0000"])]}
+    script = _dependency_oracle(_load_dependency(), findings=findings)
+    code, _, root = _evaluate_dependency(evaluate, tmp_path, script)
+    summary = _summary(root)
+    fabricated = summary["no_fabricated_advisories"]
+    assert code == 1
+    assert (fabricated["per_run_mean"], fabricated["passed_all_runs"]) == ([0.75], False)
+    assert summary["clean_precision"]["passed_all_runs"] is True
+    assert "FAIL no_fabricated_advisories" in capsys.readouterr().out
+
+
+def test_an_agent_that_never_cites_an_advisory_fails_vulnerability_recall_but_fabricates_nothing(evaluate, tmp_path):
+    eval_set = _load_dependency()
+    bare = {
+        (case["id"], VULNERABLE): [(file, line, severity, []) for file, line, severity, _ in _seeded(case, VULNERABLE)]
+        for case in eval_set.cases[:2]
+    }
+    code, _, root = _evaluate_dependency(evaluate, tmp_path, _dependency_oracle(eval_set, findings=bare))
+    summary = _summary(root)
+    assert code == 1
+    assert (summary["vuln_recall"]["per_run_mean"], summary["vuln_recall"]["passed_all_runs"]) == ([0.0], False)
+    assert summary["no_fabricated_advisories"]["passed_all_runs"] is True
+
+
+def test_an_agent_that_states_no_limitation_when_osv_fails_fails_clean_precision(evaluate, tmp_path):
+    script = _dependency_oracle(_load_dependency(), limitations={("D5", VULNERABLE): []})
+    code, _, root = _evaluate_dependency(evaluate, tmp_path, script)
+    precision = _summary(root)["clean_precision"]
+    assert code == 1
+    assert (precision["per_run_mean"], precision["passed_all_runs"]) == ([0.5], False)
+
+
+def test_an_agent_that_reports_a_vulnerability_it_could_not_look_up_fails_two_criteria(evaluate, tmp_path):
+    findings = {("D5", VULNERABLE): [("requirements.txt", 2, "high", ["CVE-2019-14234"])]}
+    code, _, root = _evaluate_dependency(evaluate, tmp_path, _dependency_oracle(_load_dependency(), findings=findings))
+    summary = _summary(root)
+    assert code == 1
+    failed = [summary[name]["passed_all_runs"] for name in ("clean_precision", "no_fabricated_advisories")]
+    assert failed == [False, False]
+
+
+def test_one_missed_hygiene_issue_of_five_meets_the_threshold_and_two_do_not(evaluate, tmp_path):
+    eval_set = _load_dependency()
+    seeded = _seeded(eval_set.cases[2], HYGIENE)
+    code, _, root = _evaluate_dependency(
+        evaluate, tmp_path, _dependency_oracle(eval_set, findings={("D3", HYGIENE): seeded[:4]})
+    )
+    assert (code, _summary(root)["hygiene_recall"]["per_run_mean"]) == (0, [0.8])
+    code, _, root = _evaluate_dependency(
+        evaluate, tmp_path / "again", _dependency_oracle(eval_set, findings={("D3", HYGIENE): seeded[:3]})
+    )
+    assert (code, _summary(root)["hygiene_recall"]["per_run_mean"]) == (1, [0.6])
+
+
+def test_a_missed_pin_in_one_case_meets_the_threshold_and_a_missed_pin_in_both_cases_does_not(evaluate, tmp_path):
+    eval_set = _load_dependency()
+    first, second = (_seeded(case, VULNERABLE) for case in eval_set.cases[:2])
+    code, _, root = _evaluate_dependency(
+        evaluate, tmp_path, _dependency_oracle(eval_set, findings={("D1", VULNERABLE): first[:2]})
+    )
+    assert (code, _summary(root)["vuln_recall"]["per_run_mean"]) == (0, [0.833333])
+    both = {("D1", VULNERABLE): first[:2], ("D2", VULNERABLE): second[:2]}
+    code, _, root = _evaluate_dependency(evaluate, tmp_path / "again", _dependency_oracle(eval_set, findings=both))
+    assert (code, _summary(root)["vuln_recall"]["per_run_mean"]) == (1, [0.666667])
+
+
+def test_a_dependency_case_run_that_ends_in_a_dispatch_error_scores_each_criterion_at_its_worst(evaluate, tmp_path):
+    script = _dependency_oracle(_load_dependency(), broken={("D1", VULNERABLE)})
+    code, client, root = _evaluate_dependency(evaluate, tmp_path, script)
+    assert (code, client.script) == (1, [])
+    entry = {entry["case_id"]: entry for entry in _results(root, "dependency_examiner")["cases"]}["D1"]
+    worst = {"vuln_recall": 0.0, "no_fabricated_advisories": 0.0}
+    assert (entry["error"], entry["scores"]) == ("SCHEMA_INVALID", worst)
+
+
+def test_the_dependency_set_holds_five_cases_and_the_planned_criteria():
+    eval_set = _load_dependency()
+    assert [case["id"] for case in eval_set.cases] == list(DEPENDENCY_STEPS_BY_CASE)
+    assert {item["name"]: item["threshold"] for item in eval_set.criteria} == DEPENDENCY_THRESHOLDS
+    assert {item["comparison"] for item in eval_set.criteria} == {"at_least"}
+    assert all(isinstance(item["threshold"], float) for item in eval_set.criteria)
+
+
+def test_the_dependency_cases_hold_the_planned_scenarios():
+    cases = {case["id"]: case for case in _load_dependency().cases}
+    assert {name: case["steps"] for name, case in cases.items()} == DEPENDENCY_STEPS_BY_CASE
+    assert {name: case["criteria"] for name, case in cases.items()} == DEPENDENCY_CRITERIA_BY_CASE
+    expected = {
+        name: [(i["step"], i["file"], i["line"], i["severity"], i.get("package")) for i in case["expected"]]
+        for name, case in cases.items()
+    }
+    assert expected == DEPENDENCY_EXPECTED_BY_CASE
+    assert {name: case.get("limitations") for name, case in cases.items()} == {
+        "D1": None,
+        "D2": None,
+        "D3": None,
+        "D4": None,
+        "D5": ["django", "pillow"],
+    }
+
+
+def _recorded():
+    return json.loads((DEPENDENCY_DIR / "osv_replay.json").read_text(encoding="utf-8"))
+
+
+def _package(key):
+    return key.split("/", 1)[1].rpartition("@")[0]
+
+
+def _named(key):
+    """Return the ecosystem and package name of a replay key as the runner looks the package up, in any version."""
+    return key.split("/", 1)[0], _normalised(key.split("/", 1)[0], _package(key))
+
+
+PYPI_PIN = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*==(?!=)\s*([^\s;#]+)")
+NPM_EXACT = re.compile(r"\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?")
+NPM_RANGE = re.compile(r"[\^~<>*]|\|\||\s|\.x$|^\d+(\.\d+)?$|^(x|latest|file:|link:|workspace:|git|github:|https?:)")
+
+
+def _pins(root):
+    """Return the replay key of every exact pin in the manifests under root, spelled as the manifest spells it.
+
+    Raises ValueError for a pin or a package.json version it cannot read, for overrides and resolutions, and for any
+    other manifest or lockfile the examiner's tools recognise, as it reads only requirements files and package.json.
+    """
+    keys = []
+    for path in sorted(path for path in root.rglob("*") if path.is_file()):
+        if path.name == "package.json":
+            declared = json.loads(path.read_text(encoding="utf-8"))
+            if hidden := [section for section in ("overrides", "resolutions") if section in declared]:
+                raise ValueError(f"{path}: cannot read the pins of {hidden[0]}")
+            for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
+                for name, declaration in declared.get(section, {}).items():
+                    if NPM_EXACT.fullmatch(version := declaration.strip()):
+                        keys.append(f"npm/{name}@{version}")
+                    elif not NPM_RANGE.search(version):
+                        raise ValueError(f"{path}: cannot tell whether {name}: {declaration!r} is a pin")
+        elif path.name.startswith("requirements") and path.suffix == ".txt":
+            for line in path.read_text(encoding="utf-8").splitlines():
+                code = line.split("#", 1)[0].split(";", 1)[0]
+                if "==" not in code or code.lstrip().startswith("-"):
+                    continue
+                if not (pinned := PYPI_PIN.fullmatch(code.rstrip())):
+                    raise ValueError(f"{path}: cannot read the pin on {line!r}")
+                keys.append(f"PyPI/{pinned[1]}@{pinned[2]}")
+        elif found := deps.dependency_file(path.name):
+            raise ValueError(f"{path}: cannot read the pins of a {found[1]}")
+    return keys
+
+
+def _manifest_count(root):
+    return sum(1 for path in root.rglob("*") if path.is_file() and deps.dependency_file(path.name))
+
+
+def _pin_problems(lookup, unavailable, recorded, budget):
+    """Return where the pins of the lookup cases, those of the unavailable case and the replay disagree, or a lookup
+    step needs more than budget tool calls (one listing, each manifest read once, each pin queried once).
+    """
+    problems = [f"{case}: {key} has no recorded answer" for case, (_, pins) in lookup.items() for key in pins
+                if key not in recorded]
+    pinned = {key for _, pins in lookup.values() for key in pins}
+    problems += [f"{key} is recorded but no lookup case pins it" for key in recorded if key not in pinned]
+    answered = {_named(key) for key in recorded}
+    problems += [f"{key} is pinned by the unavailable case but its package is recorded" for key in unavailable
+                 if _named(key) in answered]
+    problems += [f"{case}: {1 + manifests + len(pins)} tool calls exceed {budget}"
+                 for case, (manifests, pins) in lookup.items() if 1 + manifests + len(pins) > budget]
+    return problems
+
+
+def _repo(case_id):
+    return DEPENDENCY_DIR / "cases" / case_id / "repo"
+
+
+def test_the_exact_pins_of_the_cases_agree_with_the_replay_and_fit_the_tool_call_budget():
+    lookup = {case: (_manifest_count(_repo(case)), _pins(_repo(case))) for case in LOOKUP_CASES}
+    problems = _pin_problems(lookup, _pins(_repo(UNAVAILABLE_CASE)), _recorded(), DEPENDENCY["max_tool_calls"])
+    assert problems == []
+    assert all(pins for _, pins in lookup.values())
+
+
+def test_the_limitations_of_the_unavailable_case_name_exactly_the_packages_it_pins():
+    cases = {case["id"]: case for case in _load_dependency().cases}
+    pinned = sorted(_package(key) for key in _pins(_repo(UNAVAILABLE_CASE)))
+    assert sorted(cases[UNAVAILABLE_CASE]["limitations"]) == pinned
+
+
+def test_the_replay_has_advisories_for_the_seeded_pins_and_nothing_for_the_others():
+    recorded = _recorded()
+    seeded = {item[4] for items in DEPENDENCY_EXPECTED_BY_CASE.values() for item in items if item[4]}
+    assert {key for key, body in recorded.items() if body.get("vulns")} == seeded
+    assert all(body == {} for key, body in recorded.items() if key not in seeded)
+
+
+def test_the_pin_scan_reads_only_exact_pins_of_requirements_files_and_package_json(tmp_path):
+    marker = 'pywin32>=300 ; sys_platform == "win32"\nflask>=2.0 ; python_version == "3.8"\n'
+    plain = "# old==1.0\nDjango==2.2.0\nflask>=2.0\nrequests\n-e git+x#egg=y\n"
+    (tmp_path / "requirements.txt").write_text(plain + marker)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "requirements-dev.txt").write_text("pytest==8.0.0  # tests\n")
+    (tmp_path / "notes.txt").write_text("ignored==1.0\n")
+    declared = {"dependencies": {"a": "1.2.3", "b": "^1.0.0", "c": "*", "d": "file:../d", "f": "1.x", "g": ">=1 <2"}}
+    declared["dependencies"] |= {"h": "1", "i": "1.2", "j": "latest"}
+    declared["devDependencies"] = {"e": "2.0.0-rc.1"}
+    (tmp_path / "package.json").write_text(json.dumps(declared))
+    assert sorted(_pins(tmp_path)) == ["PyPI/Django@2.2.0", "PyPI/pytest@8.0.0", "npm/a@1.2.3", "npm/e@2.0.0-rc.1"]
+
+
+def test_the_pin_scan_reads_spaced_extras_indented_and_conditional_pins_and_every_dependency_section(tmp_path):
+    lines = "pyyaml == 5.3\nrequests[security]==2.19.0\n  Django==2.2.0\nuvloop==0.19.0 ; sys_platform != 'win32'\n"
+    lines += 'colorama==0.4.6 ; sys_platform == "win32"\n'
+    (tmp_path / "requirements.txt").write_text(lines + "--hash=sha256:ab==cd\n-r other.txt\n")
+    declared = {section: {name: "1.0.0"} for name, section in [
+        ("a", "dependencies"), ("b", "devDependencies"), ("c", "optionalDependencies"), ("d", "peerDependencies")]}
+    declared["dependencies"]["a"] = "1.0.0 "
+    (tmp_path / "package.json").write_text(json.dumps(declared))
+    assert sorted(_pins(tmp_path)) == sorted([
+        "PyPI/pyyaml@5.3", "PyPI/requests@2.19.0", "PyPI/Django@2.2.0", "PyPI/uvloop@0.19.0", "PyPI/colorama@0.4.6",
+        "npm/a@1.0.0", "npm/b@1.0.0", "npm/c@1.0.0", "npm/d@1.0.0",
+    ])
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        ("requirements.txt", "markdown===3.0\n"),
+        ("requirements.txt", "markdown==\n"),
+        ("requirements.txt", "==3.0\n"),
+        ("package.json", '{"dependencies": {"a": "=1.0.0"}}'),
+        ("package.json", '{"dependencies": {"a": "v2.0.0"}}'),
+        ("package.json", '{"dependencies": {"a": "npm:lodash@4.17.15"}}'),
+        ("package.json", '{"overrides": {"lodash": "4.17.15"}}'),
+        ("package.json", '{"resolutions": {"lodash": "4.17.15"}}'),
+        ("pyproject.toml", 'requests = "2.19.0"\n'),
+        ("Pipfile", '[packages]\nrequests = "==2.19.0"\n'),
+        ("package-lock.json", "{}"),
+        ("yarn.lock", ""),
+    ],
+    ids=[
+        "arbitrary-equality",
+        "no-version",
+        "no-name",
+        "equals-prefixed-version",
+        "v-prefixed-version",
+        "npm-alias",
+        "npm-overrides",
+        "npm-resolutions",
+        "pyproject-manifest",
+        "pipfile-manifest",
+        "npm-lockfile",
+        "yarn-lockfile",
+    ],
+)
+def test_the_pin_scan_fails_loudly_on_a_pin_it_cannot_read(tmp_path, name, text):
+    (tmp_path / name).write_text(text)
+    with pytest.raises(ValueError, match="cannot"):
+        _pins(tmp_path)
+
+
+PINS_OK = {"D1": (1, ["PyPI/a@1", "PyPI/b@2"])}
+
+
+@pytest.mark.parametrize(
+    ("lookup", "unavailable", "recorded", "budget", "fragment"),
+    [
+        (PINS_OK, [], {"PyPI/a@1": {}, "PyPI/b@2": {}}, 12, None),
+        (PINS_OK, [], {"PyPI/a@1": {}}, 12, "PyPI/b@2 has no recorded answer"),
+        (PINS_OK, [], {"PyPI/a@1": {}, "PyPI/b@2": {}, "PyPI/c@3": {}}, 12, "PyPI/c@3 is recorded but no lookup"),
+        (PINS_OK, ["PyPI/A@9"], {"PyPI/a@1": {}, "PyPI/b@2": {}}, 12, "PyPI/A@9 is pinned by the unavailable case"),
+        (PINS_OK, ["PyPI/B_x@9"], {"PyPI/a@1": {}, "PyPI/b-x@2": {}}, 12, "PyPI/B_x@9 is pinned by the unavailable"),
+        ({"D1": (1, ["npm/b-x@2"])}, ["npm/B_x@9"], {"npm/b-x@2": {}}, 12, None),
+        (PINS_OK, ["npm/a@9"], {"PyPI/a@1": {}, "PyPI/b@2": {}}, 12, None),
+        (PINS_OK, ["PyPI/z@9"], {"PyPI/a@1": {}, "PyPI/b@2": {}}, 12, None),
+        (PINS_OK, [], {"PyPI/a@1": {}, "PyPI/b@2": {}}, 3, "D1: 4 tool calls exceed 3"),
+    ],
+    ids=[
+        "agreeing",
+        "pin-without-answer",
+        "answer-without-pin",
+        "unavailable-pin-answered",
+        "unavailable-pypi-pin-answered-under-another-spelling",
+        "unavailable-npm-pin-is-compared-exactly",
+        "unavailable-pin-of-another-ecosystem",
+        "unavailable-pin-unanswered",
+        "over-budget",
+    ],
+)
+def test_the_pin_check_detects_a_planted_disagreement(lookup, unavailable, recorded, budget, fragment):
+    problems = _pin_problems(lookup, unavailable, recorded, budget)
+    assert (problems == []) if fragment is None else any(fragment in problem for problem in problems)
+
+
+def _normalised(ecosystem, name):
+    return re.sub(r"[-_.]+", "-", name).casefold() if ecosystem == "PyPI" else name
+
+
+def _provenance_problems(recorded):
+    """Return each recorded advisory that lacks the fields of an OSV record or affects no package its key names."""
+    problems = []
+    for key, body in recorded.items():
+        ecosystem = key.split("/", 1)[0]
+        for vuln in body.get("vulns", []):
+            if not {"schema_version", "modified"} <= set(vuln):
+                problems.append(f"{key} {vuln['id']}: not an OSV record")
+            named = [entry.get("package", {}) for entry in vuln.get("affected", [])]
+            if not any(
+                package.get("ecosystem") == ecosystem
+                and _normalised(ecosystem, package.get("name", "")) == _normalised(ecosystem, _package(key))
+                for package in named
+            ):
+                problems.append(f"{key} {vuln['id']}: affects no package its key names")
+    return problems
+
+
+def _record(name="requests", ecosystem="PyPI"):
+    return {
+        "id": "GHSA-aaaa-bbbb-cccc",
+        "schema_version": "1.7.0",
+        "modified": "2026-01-01T00:00:00Z",
+        "affected": [{"package": {"ecosystem": ecosystem, "name": name}}],
+    }
+
+
+def _without(field):
+    return {key: value for key, value in _record().items() if key != field}
+
+
+@pytest.mark.parametrize(
+    ("recorded", "fragment"),
+    [
+        ({"PyPI/requests@2.19.0": {"vulns": [_record()]}}, None),
+        ({"PyPI/pyyaml@5.3": {"vulns": [_record("PyYAML")]}}, None),
+        ({"npm/lodash@4.17.15": {"vulns": [_record("lodash", "npm")]}}, None),
+        ({"PyPI/requests@2.19.0": {"vulns": [_record("urllib3")]}}, "affects no package its key names"),
+        ({"PyPI/requests@2.19.0": {"vulns": [_record("requests", "npm")]}}, "affects no package its key names"),
+        ({"npm/Lodash@1.0.0": {"vulns": [_record("lodash", "npm")]}}, "affects no package its key names"),
+        ({"PyPI/requests@2.19.0": {"vulns": [_without("modified")]}}, "not an OSV record"),
+        ({"PyPI/requests@2.19.0": {"vulns": [_without("schema_version")]}}, "not an OSV record"),
+    ],
+    ids=[
+        "matching",
+        "pypi-name-normalised",
+        "npm-matching",
+        "other-package",
+        "other-ecosystem",
+        "npm-name-case-sensitive",
+        "no-modified",
+        "no-schema-version",
+    ],
+)
+def test_the_provenance_check_detects_a_planted_advisory_that_is_not_an_osv_record_of_its_package(recorded, fragment):
+    problems = _provenance_problems(recorded)
+    assert (problems == []) if fragment is None else any(fragment in problem for problem in problems)
+
+
+def test_every_recorded_advisory_is_an_osv_record_that_affects_the_package_its_key_names():
+    assert _provenance_problems(_recorded()) == []
+
+
+# The sha256 of the recorded content as canonical JSON, so line endings and layout do not matter. Any edit of the
+# content, a re-recording included, must change it here on purpose, because the shape check above cannot tell a
+# recorded advisory from an invented one.
+REPLAY_SHA256 = "3c420f561b1e5efadccf43457623f808c27248168f8fcdeaf87266a0c9002da8"
+
+
+def _canonical_sha256(recorded):
+    return hashlib.sha256(json.dumps(recorded, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def test_the_replay_is_the_recorded_content_unless_it_was_changed_on_purpose():
+    assert _canonical_sha256(_recorded()) == REPLAY_SHA256
+
+
+def test_the_replay_hash_ignores_layout_and_line_endings_but_not_content(tmp_path):
+    text = json.dumps(_recorded(), indent=4).replace("\n", "\r\n")
+    assert _canonical_sha256(json.loads(text)) == REPLAY_SHA256
+    changed = _recorded()
+    changed["PyPI/requests@2.19.0"]["vulns"][0]["summary"] = "edited"
+    assert _canonical_sha256(changed) != REPLAY_SHA256
+
+
+PUBLISHED_ID = re.compile(r"^(GHSA(-[0-9a-z]{4}){3}|PYSEC-\d{4}-\d+)$")
+
+
+def _id_problems(recorded):
+    problems = []
+    for key, body in recorded.items():
+        ids = [vuln["id"] for vuln in body.get("vulns", [])]
+        problems += [f"{key}: {identifier} is not in a published ID format" for identifier in ids
+                     if not PUBLISHED_ID.match(identifier)]
+        repeated = sorted({identifier for identifier in ids if ids.count(identifier) > 1})
+        problems += [f"{key}: {identifier} is listed twice" for identifier in repeated]
+    return problems
+
+
+@pytest.mark.parametrize(
+    ("ids", "fragment"),
+    [
+        (["GHSA-x84v-xcm2-53pg", "PYSEC-2018-28"], None),
+        (["GHSA-x84v-xcm2"], "not in a published ID format"),
+        (["CVE-2018-18074"], "not in a published ID format"),
+        (["PYSEC-2018-28", "PYSEC-2018-28"], "is listed twice"),
+    ],
+    ids=["published", "short-ghsa", "cve-as-id", "repeated"],
+)
+def test_the_id_check_detects_a_planted_malformed_or_repeated_id(ids, fragment):
+    problems = _id_problems({"PyPI/requests@2.19.0": {"vulns": [{"id": identifier} for identifier in ids]}})
+    assert (problems == []) if fragment is None else any(fragment in problem for problem in problems)
+
+
+def test_every_recorded_advisory_has_an_id_in_a_published_format_and_each_id_once_per_package():
+    assert _id_problems(_recorded()) == []
+
+
+def test_dependency_fixtures_and_the_replay_hold_no_credential():
+    files = [path for path in DEPENDENCY_DIR.rglob("*") if path.is_file()]
+    assert len(files) > len(DEPENDENCY_STEPS_BY_CASE)
+    assert _secret_problems(DEPENDENCY_DIR) == []
+
+
+ADDRESS = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+ROLE_ADDRESSES = {"package-announce@lists.fedoraproject.org"}
+
+
+def _address_problems(root):
+    problems = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            problems += [f"{path.name}: {found.group()}" for found in ADDRESS.finditer(text)
+                         if found.group() not in ROLE_ADDRESSES]
+    return problems
+
+
+@pytest.mark.parametrize(
+    ("text", "found"),
+    [
+        ("Credits: A. Person, (a.person93@gmail.com)", True),
+        ("mail: first.last@example.org", True),
+        ("announce: package-announce@lists.fedoraproject.org", False),
+        ("PyPI/requests@2.19.0 and npm/@acme/widgets@1.2.3", False),
+        ("mylib @ git+https://github.com/example-org/mylib.git@main", False),
+        ("proxy: https://username:password@proxy:8080", False),
+    ],
+)
+def test_the_address_scan_detects_a_planted_personal_address_and_accepts_the_list_address(tmp_path, text, found):
+    (tmp_path / "advisory.txt").write_text(text)
+    assert bool(_address_problems(tmp_path)) is found
+
+
+def test_dependency_fixtures_and_the_replay_hold_no_personal_address():
+    assert _address_problems(DEPENDENCY_DIR) == []

@@ -1,0 +1,4 @@
+# Billing service runtime dependencies.
+# Pinned by hand when the service was last released.
+requests==2.19.0
+structlog==24.4.0

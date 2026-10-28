@@ -1,0 +1,9 @@
+{
+  "name": "storefront",
+  "version": "2.3.0",
+  "private": true,
+  "dependencies": {
+    "cors": "2.8.5",
+    "lodash": "4.17.15"
+  }
+}

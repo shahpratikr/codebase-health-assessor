@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -16,14 +17,18 @@ from assessor.agents import runner
 from assessor.guardrails import DispatchError, ExaminationContext
 from assessor.llm import NoCredentialsError, make_client
 from assessor.sandbox import Workspace
+from assessor.tools import deps
 from evals import scoring
 
 EVALS_DIR = config.ROOT / "evals"
 CRITERIA_FILE, CASES_DIR, CASE_FILE, REPO_DIR = "criteria.json", "cases", "case.json", "repo"
+REPLAY_FILE = "osv_replay.json"
 RESULTS_DIR, AUDIT_DIR = "results", ".runs"
 MIN_CRITERIA = 3
 
 _TEXT = {"type": "string", "minLength": 1}
+# Printable ASCII without a space, as advisory IDs and package names are. \Z, not $: $ also matches before a newline.
+_TOKEN = {"type": "string", "pattern": r"^[\x21-\x7e]+\Z"}
 _CRITERIA = jsonschema.Draft202012Validator(
     {
         "type": "object",
@@ -65,22 +70,47 @@ _CASE = jsonschema.Draft202012Validator(
                         "line": {"type": "integer", "minimum": 1},
                         "severity": {"enum": list(config.FINDING_SEVERITIES)},
                         "contains": _TEXT,
+                        "package": _TEXT,
                     },
                     "required": ["step", "file", "line", "severity", "contains"],
                     "additionalProperties": False,
                 },
             },
+            "limitations": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _TOKEN},
             "criteria": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _TEXT},
         },
         "required": ["id", "description", "steps", "expected", "criteria"],
         "additionalProperties": False,
     }
 )
+_REPLAY = jsonschema.Draft202012Validator(
+    {
+        "type": "object",
+        "propertyNames": {
+            "pattern": rf"^({'|'.join(config.OSV_ECOSYSTEMS)})/[\x21-\x7e]*[\x21-\x3f\x41-\x7e]@[\x21-\x3f\x41-\x7e]+\Z"
+        },
+        "additionalProperties": {
+            "type": "object",
+            "properties": {
+                "vulns": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": _TOKEN, "aliases": {"type": "array", "items": _TOKEN}},
+                        "required": ["id"],
+                    },
+                }
+            },
+        },
+    }
+)
 
 
 @dataclass(frozen=True)
 class EvalSet:
-    """One agent's manifest, its criteria in file order and its cases in ID order, each with its repository path."""
+    """One agent's manifest, its criteria in file order and its cases in ID order, each with its repository path and,
+    for an agent that queries OSV, its replay file and the advisory identifiers recorded in it.
+    """
 
     agent: str
     manifest: Mapping
@@ -88,11 +118,31 @@ class EvalSet:
     cases: list[dict]
 
 
+def _pypi_name(name: str) -> str:
+    """Return name as PyPI compares names: lowercase, with each run of '-', '_' and '.' as one '-'."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _live_names(transport: deps.Transport) -> deps.Transport:
+    """Return transport answering a PyPI query under its normalised name, which is how live OSV matches names."""
+
+    def answer(query: dict) -> object:
+        package = query["package"]
+        if package["ecosystem"] == "PyPI":
+            query = {**query, "package": {**package, "name": _pypi_name(package["name"])}}
+        return transport(query)
+
+    return answer
+
+
 def _examine(client: object, log: audit.AuditLog, agent_manifest: Mapping, case: Mapping) -> tuple[dict, str | None]:
     """Return the accepted examination of each step the case lists, keyed by step, and the code of the DispatchError
     that stopped the case (the steps after it are not run), or None.
+
+    An agent that queries OSV is answered from the case's replay, never from live OSV or the environment's replay.
     """
     workspace = Workspace(case["repo"])
+    osv = _live_names(deps.replay_osv(case["replay"])) if "query_osv" in agent_manifest["tools"] else None
     outputs = {}
     for step in case["steps"]:
         code = next(item["code"] for item in agent_manifest["steps"] if item["name"] == step)
@@ -109,6 +159,7 @@ def _examine(client: object, log: audit.AuditLog, agent_manifest: Mapping, case:
                 workflow=agent_manifest["name"],
                 step=step,
                 parent_step_id=None,
+                osv=osv,
             )
         except DispatchError as error:
             return outputs, error.code
@@ -116,7 +167,8 @@ def _examine(client: object, log: audit.AuditLog, agent_manifest: Mapping, case:
 
 
 AGENTS: dict[str, Callable[[object, audit.AuditLog, Mapping, Mapping], tuple[dict, str | None]]] = {
-    "security_examiner": _examine
+    "security_examiner": _examine,
+    "dependency_examiner": _examine,
 }
 
 
@@ -168,7 +220,49 @@ def load_criteria(path: Path, agent: str) -> list[dict]:
     return criteria
 
 
-def _load_case(directory: Path, agent_manifest: Mapping, criteria: set[str]) -> dict:
+def _load_replay(path: Path) -> dict[str, list[str]]:
+    """Return the advisory IDs and aliases that the OSV replay at path records for each package version, sorted.
+
+    Raises ValueError naming path for a file that breaks the format, a PyPI key not in normalised form included; an
+    unreadable path raises its OSError.
+    """
+    recorded = _read(path, _REPLAY)
+    for key in recorded:
+        ecosystem, _, rest = key.partition("/")
+        if ecosystem == "PyPI" and rest.rpartition("@")[0] != _pypi_name(rest.rpartition("@")[0]):
+            raise ValueError(f"{path}: {key!r} is not in normalised form (lowercase, runs of '-', '_' and '.' as '-')")
+    return {
+        key: sorted({name for vuln in body.get("vulns", []) for name in [vuln["id"], *vuln.get("aliases", [])]})
+        for key, body in recorded.items()
+    }
+
+
+def _mentions(line: str, token: str) -> bool:
+    # A neighbouring word character, hyphen, plus, scope mark or dotted part makes the token part of another name or
+    # version, as in lodash.merge or 5.3.post1.
+    return re.search(rf"(?<![\w.@/-]){re.escape(token)}(?![\w+-]|\.\w)", line) is not None
+
+
+def _check_package(where: str, item: Mapping, line: str, replay: Path, recorded: Mapping[str, list[str]]) -> None:
+    if item["step"] != config.ADVISORY_STEP:
+        if "package" in item:
+            raise ValueError(f"{where}: only a {config.ADVISORY_STEP} finding names a package, not {item['package']!r}")
+        return
+    if "package" not in item:
+        raise ValueError(f"{where}: a {config.ADVISORY_STEP} finding must name its package")
+    package = item["package"]
+    if package not in recorded:
+        raise ValueError(f"{where}: package {package!r} has no response in {replay}")
+    if not recorded[package]:
+        raise ValueError(f"{where}: package {package!r} has no advisory in {replay}")
+    name, _, version = package.split("/", 1)[1].rpartition("@")
+    if not _mentions(line, name) or not _mentions(line, version):
+        raise ValueError(f"{where}: the line does not name package {package!r}")
+
+
+def _load_case(
+    directory: Path, agent_manifest: Mapping, criteria: set[str], osv: tuple[Path, Mapping[str, list[str]]] | None
+) -> dict:
     source = directory / CASE_FILE
     case = _read(source, _CASE)
     if case["id"] != directory.name:
@@ -178,6 +272,25 @@ def _load_case(directory: Path, agent_manifest: Mapping, criteria: set[str]) -> 
         raise ValueError(f"{source}: {unknown[0]!r} is not a step of {agent_manifest['name']}")
     if unlisted := [name for name in case["criteria"] if name not in criteria]:
         raise ValueError(f"{source}: criterion {unlisted[0]!r} is not in criteria.json")
+    packages = [item["package"] for item in case["expected"] if "package" in item]
+    if osv is None:
+        if "limitations" in case or packages:
+            named = f"limitations {case['limitations']}" if "limitations" in case else f"package {packages[0]!r}"
+            raise ValueError(f"{source}: {agent_manifest['name']} does not query OSV, so a case cannot name {named}")
+    else:
+        advisory = [item for item in case["expected"] if item["step"] == config.ADVISORY_STEP]
+        pins = [item["package"] for item in advisory if "package" in item]
+        if "limitations" in case and pins:
+            raise ValueError(
+                f"{source}: a case that lists limitations expects every lookup to fail, "
+                f"so it cannot expect the vulnerable pin {pins[0]!r}"
+            )
+        answered = [key.partition("/")[::2] for key in osv[1]]
+        pypi = {rest.rpartition("@")[0] for ecosystem, rest in answered if ecosystem == "PyPI"}
+        npm = {rest.rpartition("@")[0].casefold() for ecosystem, rest in answered if ecosystem == "npm"}
+        limitations = case.get("limitations", [])
+        if clash := [name for name in limitations if _pypi_name(name) in pypi or name.casefold() in npm]:
+            raise ValueError(f"{source}: limitation {clash[0]!r} names a package that {osv[0]} answers")
     workspace = Workspace(directory / REPO_DIR)
     for item in case["expected"]:
         if item["step"] not in case["steps"]:
@@ -192,6 +305,8 @@ def _load_case(directory: Path, agent_manifest: Mapping, criteria: set[str]) -> 
             raise ValueError(f"{source}: {item['file']} has {len(lines)} lines, not line {item['line']}")
         if item["contains"] not in lines[item["line"] - 1]:
             raise ValueError(f"{source}: {item['file']} line {item['line']} does not hold {item['contains']!r}")
+        if osv is not None:
+            _check_package(f"{source}: {item['file']} line {item['line']}", item, lines[item["line"] - 1], *osv)
     ordered = sorted(case["expected"], key=lambda item: (item["step"], scoring.normal_path(item["file"]), item["line"]))
     for before, after in zip(ordered, ordered[1:]):
         place = [(item["step"], scoring.normal_path(item["file"])) for item in (before, after)]
@@ -200,22 +315,29 @@ def _load_case(directory: Path, agent_manifest: Mapping, criteria: set[str]) -> 
                 f"{source}: expected findings at lines {before['line']} and {after['line']} of {after['file']} "
                 "share a scoring window"
             )
-    return {**case, "repo": directory / REPO_DIR}
+    loaded = {**case, "repo": directory / REPO_DIR}
+    if osv is not None:
+        loaded |= {"replay": osv[0], "advisories": osv[1]}
+    return loaded
 
 
 def load_eval_set(agent: str, manifests: Mapping[str, Mapping], evals_dir: Path = EVALS_DIR) -> EvalSet:
     """Return the criteria and cases under evals_dir/<agent>, checked against the agent's manifest and each other
-    before any model call: every case's expected line exists and holds its text, and every criterion has a case.
+    before any model call: every case's expected line exists and holds its text, every expected vulnerable pin names a
+    package that the agent's osv_replay.json records advisories for, and every criterion has a case.
 
     Raises ValueError naming the path that breaks a rule; an OSError reading a file or listing the cases propagates.
     """
     folder = evals_dir / agent
     criteria = load_criteria(folder / CRITERIA_FILE, agent)
+    osv = None
+    if "query_osv" in manifests[agent]["tools"]:
+        osv = (folder / REPLAY_FILE, _load_replay(folder / REPLAY_FILE))
     directories = sorted(path for path in (folder / CASES_DIR).iterdir() if path.is_dir())
     if not directories:
         raise ValueError(f"{folder / CASES_DIR}: no cases")
     named = {criterion["name"] for criterion in criteria}
-    cases = [_load_case(directory, manifests[agent], named) for directory in directories]
+    cases = [_load_case(directory, manifests[agent], named, osv) for directory in directories]
     listed = {name for case in cases for name in case["criteria"]}
     if unused := [name for name in named if name not in listed]:
         raise ValueError(f"{folder / CRITERIA_FILE}: no case lists {', '.join(sorted(unused))}")

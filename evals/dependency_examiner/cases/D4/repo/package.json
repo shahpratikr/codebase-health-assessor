@@ -1,0 +1,10 @@
+{
+  "name": "report-ui",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "chalk": "4.1.2",
+    "commander": "12.1.0",
+    "dayjs": "1.11.13"
+  }
+}

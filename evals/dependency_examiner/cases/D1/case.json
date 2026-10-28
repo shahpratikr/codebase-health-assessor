@@ -1,0 +1,37 @@
+{
+  "id": "D1",
+  "description": "A Python service pins three packages that have published advisories, in three requirements files, beside one that has none.",
+  "steps": [
+    "known_vulnerabilities"
+  ],
+  "expected": [
+    {
+      "step": "known_vulnerabilities",
+      "file": "requirements.txt",
+      "line": 3,
+      "severity": "high",
+      "contains": "requests==2.19.0",
+      "package": "PyPI/requests@2.19.0"
+    },
+    {
+      "step": "known_vulnerabilities",
+      "file": "reports/requirements.txt",
+      "line": 2,
+      "severity": "critical",
+      "contains": "pyyaml==5.3",
+      "package": "PyPI/pyyaml@5.3"
+    },
+    {
+      "step": "known_vulnerabilities",
+      "file": "worker/requirements.txt",
+      "line": 2,
+      "severity": "high",
+      "contains": "markdown==3.0",
+      "package": "PyPI/markdown@3.0"
+    }
+  ],
+  "criteria": [
+    "vuln_recall",
+    "no_fabricated_advisories"
+  ]
+}

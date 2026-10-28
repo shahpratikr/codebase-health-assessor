@@ -1,0 +1,13 @@
+{
+  "id": "D4",
+  "description": "Python and npm dependencies that are all pinned to versions with no published advisory.",
+  "steps": [
+    "known_vulnerabilities",
+    "dependency_hygiene"
+  ],
+  "expected": [],
+  "criteria": [
+    "clean_precision",
+    "no_fabricated_advisories"
+  ]
+}
