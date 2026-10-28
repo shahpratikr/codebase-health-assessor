@@ -1,0 +1,20 @@
+{
+  "id": "S1",
+  "description": "An AWS access key pair is written into a settings module.",
+  "steps": [
+    "secrets"
+  ],
+  "expected": [
+    {
+      "step": "secrets",
+      "file": "config.py",
+      "line": 4,
+      "severity": "critical",
+      "contains": "AKIAIOSFODNN7EXAMPLE"
+    }
+  ],
+  "criteria": [
+    "seeded_recall",
+    "severity_calibration"
+  ]
+}

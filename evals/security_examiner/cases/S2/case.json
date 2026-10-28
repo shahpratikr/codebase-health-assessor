@@ -1,0 +1,27 @@
+{
+  "id": "S2",
+  "description": "A private key file and a production database password are committed.",
+  "steps": [
+    "secrets"
+  ],
+  "expected": [
+    {
+      "step": "secrets",
+      "file": "keys/server.key",
+      "line": 1,
+      "severity": "critical",
+      "contains": "BEGIN RSA PRIVATE KEY"
+    },
+    {
+      "step": "secrets",
+      "file": ".env",
+      "line": 7,
+      "severity": "critical",
+      "contains": "DB_PASSWORD"
+    }
+  ],
+  "criteria": [
+    "seeded_recall",
+    "severity_calibration"
+  ]
+}

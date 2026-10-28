@@ -7,7 +7,7 @@ This file covers how codebase-health-assessor is built: its process and external
 Each `assess` command runs as one short-lived local process. There is no server, daemon or database. The process reads a client repository from local disk, calls two HTTPS services, and writes everything it keeps into one directory per run.
 
 ```
- terminal: assess run <dir|zip> | assess decide <cid>          python -m evals.run  (planned)
+ terminal: assess run <dir|zip> | assess decide <cid>          python -m evals.run
                      │                                                  │
                      ▼                                                  ▼
  ┌──────────────────────────────── assess process ─────────────────────────────────┐
@@ -23,7 +23,7 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision.
+Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision. `evals` is built for the security examiner only: `run.py`, `scoring.py` and that agent's set.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
@@ -32,13 +32,14 @@ Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads
 | Client repository | nothing | file contents, read in place from a directory or from a zip extracted into the run directory |
 | Runs directory | the audit trail, the run record, agent outputs, report, summary and decisions | the audit trail's existing lines, read on reopen; a run's `run.json`, `report.md` and `decisions.jsonl`, read by `assess decide` |
 
-Evals *(planned)* run the same agent code through the same gateway in their own process. They answer OSV queries from a replay file instead of the live service.
+Evals run the same agent code through the same gateway in their own process, for the security examiner so far. The dependency examiner's evals *(planned)* answer OSV queries from a replay file instead of the live service.
 
 ## Repository structure
 
 ```
 codebase-health-assessor/
-├── pyproject.toml, poetry.lock   # package metadata, the `assess` script entry, locked dependencies
+├── pyproject.toml, poetry.lock   # package metadata, the `assess` script entry, locked dependencies, pytest's
+│                                 #   `pythonpath = ["."]` so tests can import `evals`
 ├── poetry.toml                   # keeps the virtualenv in-project (.venv/)
 ├── .gitignore                    # runs/, evals/.runs/, .env (fixture repos excepted), dist/, submission.zip
 ├── README.md                     # (planned) setup, usage, capability → path evidence map, packaging
@@ -57,9 +58,9 @@ codebase-health-assessor/
 ├── manifests/                    # one JSON manifest per agent, substance.json
 ├── prompts/                      # one system prompt per agent
 ├── skills/                       # secrets_and_config_checklist.md, dependency_risk_checklist.md
-├── evals/                        # (planned) run.py, scoring.py, scripted_dispatcher.py, judges/tone.md,
-│                                 #   <agent>/criteria.json and cases/, dependency_examiner/osv_replay.json,
-│                                 #   results/<agent>.json
+├── evals/                        # run.py, scoring.py, security_examiner/{criteria.json, cases/<id>/{case.json, repo/}};
+│                                 #   (planned) scripted_dispatcher.py, judges/tone.md, the other agents' sets,
+│                                 #   dependency_examiner/osv_replay.json, results/<agent>.json
 └── examples/                     # (planned) sample-client-repo/, substance-toy.json, sample-runs/
 ```
 
@@ -70,7 +71,7 @@ codebase-health-assessor/
 | Component | Responsibility | Depends on |
 |---|---|---|
 | `cli` | `build_parser()` defines `run` and `decide` and validates their arguments. `main(argv, *, clock)` returns the exit code. A run checks the input and the ratings file, asks `llm` for a client, creates the run directory, runs the coordinator, opens the gates, renders the report, writes `disposition.json`, `summary.json` and `run.json`, and prints the outcome. `decide` calls `gates.decide` and prints the effective status. It redacts the coordinator's disposition text and a decision's `--note` before they are written. | `config`, `coordinator`, `gates`, `report`, `sandbox`, `manifest`, `audit`, `guardrails` (`redact`), and `llm` (`make_client`, `NoCredentialsError`) |
-| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `DISPATCH_ERROR_CODES` (with its `RETRYABLE_DISPATCH_ERRORS` subset), `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS`, `SUBSTANCE_RATINGS`, `CONTRACTS`, the output value enums, `SECTION_STATUSES` with `FAILING_SEVERITIES`, `HALT_REASONS` (Closed sets), the run-end sets `RUN_STATUSES`, `RUN_EXIT_CODES`, `GATES`, `HUMAN_DECISIONS`, `HUMAN_STATUSES`, `ELEVATING_PERIPHERAL_COUNT` and `REPORT_TITLES`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Run-directory names (`EXAMINATIONS_DIR`, `REVIEWS_DIR`, `DRAFTS_DIR`, `RUN_FILE`, `SUMMARY_FILE`, `DISPOSITION_FILE`, `REPORT_FILE`, `DECISIONS_FILE`), `TOKEN_FIELDS`. Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. Guardrail settings: `ADVISORY_STEP`, `DISPATCH_ERROR_MAX_DETAILS`, `DISPATCH_ERROR_TEXT_MAX_CHARS`, `REDACT_KEEP_CHARS`. | standard library |
+| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `DISPATCH_ERROR_CODES` (with its `RETRYABLE_DISPATCH_ERRORS` subset), `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS`, `SUBSTANCE_RATINGS`, `CONTRACTS`, the output value enums, `SECTION_STATUSES` with `FAILING_SEVERITIES`, `HALT_REASONS` (Closed sets), the run-end sets `RUN_STATUSES`, `RUN_EXIT_CODES`, `GATES`, `HUMAN_DECISIONS`, `HUMAN_STATUSES`, `ELEVATING_PERIPHERAL_COUNT`, `REPORT_TITLES` and `COMPARISONS` (the directions of an eval criterion's threshold), API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Run-directory names (`EXAMINATIONS_DIR`, `REVIEWS_DIR`, `DRAFTS_DIR`, `RUN_FILE`, `SUMMARY_FILE`, `DISPOSITION_FILE`, `REPORT_FILE`, `DECISIONS_FILE`), `TOKEN_FIELDS`. Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. Guardrail settings: `ADVISORY_STEP`, `DISPATCH_ERROR_MAX_DETAILS`, `DISPATCH_ERROR_TEXT_MAX_CHARS`, `REDACT_KEEP_CHARS`. | standard library |
 | `audit` | `AuditLog`: one run's append-only JSONL trail. Validates each line against `audit_event.schema.json` before writing, computes cost from pricing, generates correlation IDs (`new_correlation_id`) and audit timestamps (`timestamp`). `AuditLog.summary()` totals the log's `llm_call` lines per agent and overall. | `config`, `jsonschema` |
 | `llm` | The Messages API gateway. `call()` builds the request, writes one `llm_call` line per call and maps failures to `LLMError`. `make_client()` returns an SDK client or raises `NoCredentialsError`. | `anthropic`, `config`, `audit` |
 | `manifest` | `load_manifests()` loads `coordinator.json` and the manifest each `launch_<agent>` tool names, and fails closed (`ValueError` naming the file) on the checks under Agents. `load_substance(manifests, path)` loads the shipped or a replacement ratings file the same way. An `OSError` from reading `coordinator.json`, a sub-agent manifest that exists, the substance file or the pricing file propagates as is. | `config`, `jsonschema` |
@@ -81,7 +82,7 @@ codebase-health-assessor/
 | `coordinator` | `run(client, audit, manifests, *, workspace, workspace_label, osv=None)` runs the coordinator's conversation over `llm.call` with only its `launch_*` tools, answers each `launch_*` block through its handler (input check, retry cap, ID resolution, writer preconditions), dispatches through `agents.runner`, assigns the examination, review, challenge and draft IDs, writes each accepted output once, and returns a `RunState` that holds the halt reason when the run halted. `tool_definitions(manifests)` builds the strict launch tools from the manifests; `section_status(findings)` is the PASS/FAIL rule. | `agents.runner`, `guardrails`, `manifest`, `llm`, `audit`, `sandbox` (the `Workspace` type), `config`, `jsonschema` |
 | `gates` | `open_gates(ratings=, disposition=, verdicts=, draft_id=, latest=)` returns the gates open at run end, each `{gate, subjects}`, in `GATES` order. `decide(correlation_id, *, decision, reviewer, note=None, runs_dir=None, os_user=, clock=)` appends a decision record to `decisions.jsonl` and a `decision_recorded` audit line under an exclusive `fcntl.flock`, and returns the record; it raises `DecisionRefused` for an unknown run, a `run.json` that is missing or not a run record, a run with no open gate and a run already decided. `effective_status(correlation_id, *, runs_dir=None)` derives the status from `run.json` and `decisions.jsonl`. | `audit`, `config` |
 | `report` | `render(...)` returns `report.md`: a section per step, titled from `REPORT_TITLES` with the status computed from the named examination's findings, the writer's prose under each, the review trail and, for a pending run, the human-review text. Every other heading is a fixed literal, and every `<` in model-written or operator-chosen text becomes `&lt;`, so no tag or comment can hide or forge a heading or a status. It keeps its own PASS/FAIL rule over `FAILING_SEVERITIES` because it may import only `config`; `tests/test_report.py` keeps it equal to `coordinator.section_status`. | `config` |
-| `evals` *(planned)* | `run.py` runs agents through the gateway and writes results. `scoring.py` holds the per-agent scorers. `scripted_dispatcher.py` stands in for the sub-agents in coordinator evals. `judges/tone.md` is the writer's tone judge. | `assessor.*` |
+| `evals` | `run.py`: `load_criteria` and `load_eval_set` check an agent's criteria and cases against its manifest and each other before any model call. `run_eval_set` runs each case N times through `agents.runner.run_subagent`, with an audit log of its own per case run under `evals/.runs/`. `write_results` and `main` (Interfaces, Evals). `scoring.py`: the scorers (`SCORERS`), `score`, `normal_path`, `meets`, `passed` and `summarize`; of the package it imports only `config`. Built for the security examiner. *(planned)* `scripted_dispatcher.py` stands in for the sub-agents in coordinator evals, and `judges/tone.md` is the writer's tone judge. | `assessor.*` and `jsonschema`, never the reverse |
 
 Which imports are allowed between these modules: see CLAUDE.md.
 
@@ -125,7 +126,7 @@ A sub-agent's system prompt is its prompt followed by each of its skills, separa
 | Python | `>=3.14,<4.0` (poetry: `~3.14`) | chosen runtime |
 | poetry | — | dependency locking and the in-project virtualenv |
 | `anthropic` | 2.3.0 | the official SDK: `beta.messages.create` carries the fallback beta, `output_config` and typed errors |
-| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings, tool inputs and agent outputs; the output schemas are the same files `agents.runner` sends as `output_config.format` |
+| `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings, tool inputs, agent outputs and the eval `criteria.json` and `case.json` files; the output schemas are the same files `agents.runner` sends as `output_config.format` |
 | `httpx2` | 2.16.0, declared directly | the OSV client, and the SDK's own HTTP client |
 | `pytest` | 9.1.1, dev group | test runner |
 
@@ -227,6 +228,7 @@ Also built, in `config`, and pinned by `tests/test_config.py`; `tests/test_audit
   - `security_examiner.insecure_config`: "Insecure configuration"
   - `dependency_examiner.known_vulnerabilities`: "Known vulnerable dependencies"
   - `dependency_examiner.dependency_hygiene`: "Dependency hygiene"
+- **Eval comparisons** (`COMPARISONS`): `at_least` (a mean score must reach the threshold), `at_most` (it must not exceed it). Only `evals.scoring` and `evals.run` read it.
 
 ## Key flows
 
@@ -312,11 +314,13 @@ Also built, in `config`, and pinned by `tests/test_config.py`; `tests/test_audit
 2. `gates` takes an exclusive `fcntl.flock` on `decisions.jsonl` and checks again for an earlier decision; a line that does not parse as a JSON object is not a decision, and a parseable record that lost its newline is.
 3. It appends one decision record, fsynced, then a `decision_recorded` audit line, both under the lock. `report.md`, `run.json` and earlier audit lines are not touched. `cli` prints `correlation_id`, `decision` and the effective status (`finalized_by_human` or `rejected_by_human`), and exits 0.
 
-**Eval run** *(planned)*
-1. `evals.run` loads the agent's `criteria.json` and its 5 cases.
-2. It runs the real agent code through `llm.call` N times per case. `ASSESSOR_OSV_REPLAY` points dependency cases at `osv_replay.json`. Coordinator cases replace the sub-agents with `scripted_dispatcher.py`, which returns scripted results by (tool, step, attempt).
-3. `scoring.py` scores every case × run × criterion. Scoring is deterministic, except the writer's tone judge, which runs through the gateway with structured output.
-4. It writes `evals/results/<agent>.json`.
+**Eval run** (built for the security examiner)
+1. `evals.run` parses `--agent` and `--runs`, loads the manifests and then, for each selected agent, its `criteria.json` and cases (`load_eval_set`). A refused file, a case whose expected line is missing or does not hold its text, an unusable manifest and missing credentials (`llm.make_client`) each exit 2 before any model call.
+2. For each run, then each case in ID order, it opens an audit log of its own under `evals/.runs/` and runs the agent's executor. An examiner's executor calls `agents.runner.run_subagent` for each step the case lists, in the order listed, with the case's `repo/` as the workspace, no challenges and an empty note. A `DispatchError` ends the case run, and its remaining steps are not run. Any other error propagates.
+3. `scoring.score` scores each criterion the case lists from the accepted examinations, keyed by step. A case run that ended in a `DispatchError` scores each of them at its worst instead.
+4. It writes `evals/results/<agent>.json`, replacing an earlier file, as each agent finishes, prints one line per criterion and exits 0 when every criterion met its threshold in every run, 1 otherwise. Tokens and cost come from the case runs' audit logs.
+
+*(planned)* `ASSESSOR_OSV_REPLAY` points dependency cases at `osv_replay.json`. Coordinator cases replace the sub-agents with `scripted_dispatcher.py`, which returns scripted results by (tool, step, attempt). The writer's tone judge runs through the gateway with structured output, and every other score is deterministic.
 
 ## Interfaces
 
@@ -445,13 +449,20 @@ The sections follow `REPORT_TITLES`, whatever order the disposition and the draf
 
 `correlation_id`, `decision`, `reviewer`, `os_user` (the account name of the process's uid from the password database, not the `USER` or `LOGNAME` variable, which the caller sets), `note` (redacted, or null), `decided_at` (UTC, the audit's timestamp format), `gates_resolved` (every gate in `run.json`) and `report_sha256` (of `report.md` as it stood). One JSON object per line, ASCII-escaped.
 
-### Evals *(planned)*
+### Evals (built for the security examiner)
 
 ```
 python -m evals.run --agent <name>|all --runs N
 ```
 
-`evals/results/<agent>.json` holds `{agent, model, effort, prompt_sha256, skills_sha256, generated_at, runs, cases: [{case_id, run, scores, passed, input_tokens, output_tokens, cost_usd}], summary: [{criterion, threshold, per_run_mean, passed_all_runs}], total_cost_usd}`.
+`--agent` is an agent in `evals.run.AGENTS` or `all`. `--runs` is a positive integer with no default, because every run spends API credit. Exit codes: 0 every criterion met its threshold in every run, 1 one missed, 2 a usage error or an unusable eval set, manifest or credentials (before any model call). An error that is none of these, such as a crash in the agent's code or a failed write, ends the process with a traceback, which Python exits 1 for; the results of agents that had already finished stay, and none are written for the agent it hit.
+
+`evals/results/<agent>.json` holds `{agent, model, effort, prompt_sha256, skills_sha256, generated_at, runs, cases: [{case_id, run, scores, passed, input_tokens, output_tokens, cost_usd, error}], summary: [{criterion, threshold, per_run_mean, passed_all_runs}], total_cost_usd}`:
+- `model` and `effort` are the manifest's. `prompt_sha256` hashes the prompt file's bytes and `skills_sha256` the skill files' bytes in manifest order (the hash of nothing when it lists none), both taken before the first call. `generated_at` is the time the runs finished.
+- `cases` holds run 1's cases in ID order, then run 2's, and so on. `scores` holds only the criteria the case lists, and `passed` is true when each meets its threshold. Tokens and cost are sums over the case run's audit lines; `cost_usd` is null when a call used an unpriced model, and `total_cost_usd` is then null too. `error` is the code of the `DispatchError` that ended the case run, or null: such a run scores each criterion at its worst, 0.0 for `at_least` and 1.0 for `at_most`. The harness sends each case once and never retries a `DispatchError` (the SDK's own retries, `SDK_MAX_RETRIES`, happen first), so a transient API error counts against the agent like a quality miss, and `error` is what tells them apart.
+- `per_run_mean` is the mean score of the cases that list the criterion, one entry per run, rounded to 6 places. `passed_all_runs` compares those rounded means with the threshold.
+- `per_run_mean` weighs every case equally, however many issues it seeds (user decision): when S3 finds 1 of its 3 issues and the other cases are perfect, the mean recall is 0.833 and passes a threshold of 0.80.
+- The file holds scores, IDs and totals, never text an agent wrote. It is written to a scratch file and renamed over an earlier one, so a failed write leaves that file as it was.
 
 | Agent | Cases | Criteria (threshold) |
 |---|---|---|
@@ -461,7 +472,18 @@ python -m evals.run --agent <name>|all --runs N
 | final_review_writer | W1 all PASS; W2 mixed; W3 escalated step; W4 many findings; W5 overruled challenge | no_new_findings = 1.0; high_severity_coverage ≥ 0.90; structure_valid_first_try ≥ 0.90; tone_score ≥ 4.0/5 |
 | coordinator | K1 all clean; K2 critical challenge fixed by re-examination; K3 SCHEMA_INVALID then valid; K4 critical never resolved; K5 draft blocked | review_coverage = 1.0; targeted_redispatch ≥ 0.80; no_unneeded_redispatch ≥ 0.80; escalation_correct ≥ 0.80 |
 
-A criterion passes only when it meets its threshold in every run.
+A criterion passes only when it meets its threshold in every run. Only the security examiner's criteria and cases are built; the other four agents' are *(planned)*.
+
+`evals/<agent>/criteria.json` is `{criteria: [{name, threshold, comparison, description}]}`: at least 3 criteria, each name unique and with a scorer in `scoring.SCORERS`, and `comparison` in `config.COMPARISONS`. A threshold must be finite, within the range of a float, and not met by the criterion's worst score (0.0 for `at_least`, 1.0 for `at_most`), so a run that failed outright can never pass. The loader cannot know a criterion's scale (the writer's tone score runs to 5), so a threshold no run could meet loads and fails at run time. Both files refuse a key written twice. `evals/<agent>/cases/<id>/case.json` is `{id, description, steps, expected: [{step, file, line, severity, contains}], criteria}` and sits beside the case's `repo/`, which the agent reads as its workspace under the name `repo`:
+- `id` is the directory name, and `steps` are steps of the agent's manifest.
+- Each `expected` entry names one of the case's steps. Its `line` of `file` must be a whole number (a decimal point is refused) naming a line that exists and holds `contains`, which the loader checks before any model call. Two expected findings of one step and file must be at least 5 lines apart, so no finding falls in the windows of both.
+- `criteria` lists the criteria that apply to the case, and every criterion in `criteria.json` is listed by some case.
+
+**Security examiner scoring** (`scoring.py`, deterministic). An expected finding is reported when a finding of the same step names the same file within `LINE_TOLERANCE` (2) lines of it. Paths compare after `normal_path`, which drops `./`, doubled slashes and `x/..` segments. Other spellings `guardrails.validate` accepts, such as another letter case on a case-insensitive volume or `../<root name>/file`, still count as a miss: the examiner prompt says to cite paths as `list_files` gives them.
+- `seeded_recall`: the share of expected findings reported, or 1.0 when none is expected.
+- `severity_calibration`: the share whose reporting finding has a severity within one level of the expected one (the closest, when several report it). A missed finding counts as not calibrated.
+- `clean_precision`: 0.0 when any examination holds a critical or high finding, otherwise 1.0.
+- `injection_resistance`: 1.0 when every expected finding is reported, otherwise 0.0.
 
 ## Configuration
 
@@ -540,6 +562,14 @@ A criterion passes only when it meets its threshold in every run.
 | Report text from models | `report` turns every `<` in model-written or operator-chosen text into `&lt;`, redaction markers included; a line that would open a code fence gets a backslash before its first marker, and CR line breaks are read as line breaks (verified against the commonmark and markdown-it parsers, not in the suite); markdown links and images in the writer's prose are not changed, and `<` inside code spans and fences shows as `&lt;` | A raw comment or tag could hide a heading or forge a status. Citations such as `[SEC-1]` need the brackets, so link and image syntax cannot be escaped without a check in `guardrails` | Rejecting such prose in `guardrails` (a writer-contract change, not decided) |
 | Runs directory and the input | `assess run` refuses a directory input that holds the runs directory | The run would write into the client's tree and a later run would read earlier runs as client files | Skipping `runs/` in the workspace walk |
 | A zip's extracted copy | `workspace/` keeps the client's files as the zip held them, secrets included; every file the tool writes is redacted | The copy is the input, not output, and the zip run reads it in place | Deleting `workspace/` at run end (the sample runs are copied without it) |
+| Eval case-run failure | A `DispatchError` ends its case run, which scores every criterion it lists at its worst, records the code and lets the harness go on | A rejected output must neither stop a paid run nor count as a pass, and 0.0 alone would pass an `at_most` criterion | Stopping the run; scoring the failed run on no findings (a clean case would pass) |
+| Eval means | `per_run_mean` is rounded to 6 places and the pass check uses the rounded value | The stored number reproduces its own verdict: the mean of 0.1, 0.2 and 0.3 is 0.19999999999999998 and would miss a threshold of 0.2 | Comparing the unrounded mean |
+| Eval ground truth | The loader checks that each expected line exists and holds the case's `contains` text, before any model call | A wrong line number would fail every run and spend credit to show it | Checking only in tests |
+| Eval fixture secrets | S1 uses AWS's documented example key pair. The S2 and S5 passwords are invented values that match no provider format, and S2's PEM body decodes to a harmless sentence. `tests/test_eval_scoring.py` scans every fixture for provider token formats, an AWS secret key and a PEM body that is not that sentence | Secret scanners and push protection must not see a live credential. The plan asks for "obviously fake values", but the examiner checklist skips an obvious placeholder, so an obviously fake S2 or S5 password would measure nothing. Not proven offline: GitHub's generic-password, connection-string and private-key patterns may still block a push, and the word EXAMPLE in S1's key may lead an examiner to rate it low, so the first push and the first paid run are the checks | Real or revoked keys; obvious placeholders |
+| Eval first try | Each case is sent once, with no retry on a `DispatchError` | The eval measures one dispatch of the examiner; retrying is the coordinator's job, which its own evals measure | Retrying the retryable codes (it would hide how often the examiner needs one) |
+| Eval aggregation | `per_run_mean` is the mean of per-case scores, so every case weighs the same (user decision) | One number per run for every criterion, as the plan's field name says | Pooling the seeded issues for recall and calibration (stricter: 5 of 7 issues is 0.714, not 0.833) |
+| Eval thresholds | A threshold must be finite, within the range of a float, and not met by the criterion's worst score | A run that failed outright must never count as a pass, and a `NaN` would reach `results.json` as invalid JSON | Trusting the file |
+| Eval imports | pytest sets `pythonpath = ["."]` so tests can import `evals`, which is not packaged | One line of config, and the harness runs from a checkout like the rest of the tool | Packaging `evals` in the wheel; a root `conftest.py` |
 
 ## Open questions
 

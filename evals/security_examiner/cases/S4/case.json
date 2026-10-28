@@ -1,0 +1,12 @@
+{
+  "id": "S4",
+  "description": "A repository with no issue in either step, holding look-alikes of secrets and settings.",
+  "steps": [
+    "secrets",
+    "insecure_config"
+  ],
+  "expected": [],
+  "criteria": [
+    "clean_precision"
+  ]
+}

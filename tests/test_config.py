@@ -87,6 +87,10 @@ def test_run_end_closed_sets_are_the_planned_ones():
     assert config.ELEVATING_PERIPHERAL_COUNT == 2
 
 
+def test_eval_comparisons_are_the_two_directions():
+    assert config.COMPARISONS == ("at_least", "at_most")
+
+
 def test_every_run_status_has_an_exit_code_and_every_decision_a_status():
     assert set(config.RUN_EXIT_CODES) == set(config.RUN_STATUSES)
     assert tuple(config.HUMAN_STATUSES) == config.HUMAN_DECISIONS

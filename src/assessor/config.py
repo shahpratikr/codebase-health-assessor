@@ -80,6 +80,8 @@ REPORT_TITLES = {
     "dependency_examiner.known_vulnerabilities": "Known vulnerable dependencies",
     "dependency_examiner.dependency_hygiene": "Dependency hygiene",
 }
+# How an eval criterion's mean score must stand to its threshold; only evals read it.
+COMPARISONS = ("at_least", "at_most")
 
 MAX_TOKENS = 16000
 SDK_MAX_RETRIES = 2

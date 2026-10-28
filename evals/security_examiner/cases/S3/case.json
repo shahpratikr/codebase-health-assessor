@@ -1,0 +1,34 @@
+{
+  "id": "S3",
+  "description": "Flask debug mode, wildcard CORS and disabled TLS verification in one app.",
+  "steps": [
+    "insecure_config"
+  ],
+  "expected": [
+    {
+      "step": "insecure_config",
+      "file": "app.py",
+      "line": 8,
+      "severity": "medium",
+      "contains": "origins=\"*\""
+    },
+    {
+      "step": "insecure_config",
+      "file": "app.py",
+      "line": 13,
+      "severity": "medium",
+      "contains": "verify=False"
+    },
+    {
+      "step": "insecure_config",
+      "file": "app.py",
+      "line": 23,
+      "severity": "high",
+      "contains": "debug=True"
+    }
+  ],
+  "criteria": [
+    "seeded_recall",
+    "severity_calibration"
+  ]
+}
