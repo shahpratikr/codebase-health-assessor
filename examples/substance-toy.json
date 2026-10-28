@@ -1,0 +1,21 @@
+{
+  "ratings": {
+    "security_examiner": {
+      "rating": "core",
+      "rationale": "Finding leaked secrets and unsafe configuration is billable work; it covers 2 of 4 sections."
+    },
+    "dependency_examiner": {
+      "rating": "core",
+      "rationale": "Checking packages for advisories and hygiene is billable work; it covers the other 2 sections."
+    },
+    "final_review_writer": {
+      "rating": "toy",
+      "rationale": "Demo rating: treats the writer as a formatting step that adds no billable judgment, to show the substance gate sending the run to a human."
+    }
+  },
+  "not_rated": {
+    "adversarial_reviewer": {
+      "reason": "Scoped by its review assignment, not one workflow: it checks the examiners' and writer's outputs."
+    }
+  }
+}

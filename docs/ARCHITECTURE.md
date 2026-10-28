@@ -23,7 +23,7 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision. `evals` is built for all five LLM agents: `run.py`, `scoring.py`, `scripted_dispatcher.py`, `judges/tone.md` and each agent's set.
+Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision. `evals` is built for all five LLM agents: `run.py`, `scoring.py`, `scripted_dispatcher.py`, `judges/tone.md` and each agent's set. The README (setup, commands, packaging and the evidence map) and `examples/` (the sample client repo and `substance-toy.json`) are built. The committed eval results and the recorded sample runs are not: they come from manual runs that spend API credit.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
@@ -42,7 +42,7 @@ codebase-health-assessor/
 │                                 #   `pythonpath = ["."]` so tests can import `evals`
 ├── poetry.toml                   # keeps the virtualenv in-project (.venv/)
 ├── .gitignore                    # runs/, evals/.runs/, .env (fixture repos excepted), dist/, submission.zip
-├── README.md                     # (planned) setup, usage, capability → path evidence map, packaging
+├── README.md                     # setup, commands, ZIP packaging, evidence map (rubric card or rule → repo paths)
 ├── docs/                         # PRD.md, ARCHITECTURE.md
 ├── config/pricing.json           # $/MTok per model
 ├── schemas/                      # audit_event, manifest, substance, examination, review, writer_output,
@@ -54,7 +54,8 @@ codebase-health-assessor/
 │   ├── coordinator.py
 │   └── gates.py, report.py
 ├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic; fixtures/ holds an OSV
-│                                 #   replay sample
+│                                 #   replay sample; test_readme_evidence_map.py and test_examples.py check the README
+│                                 #   and examples/
 ├── manifests/                    # one JSON manifest per agent, substance.json
 ├── prompts/                      # one system prompt per agent
 ├── skills/                       # secrets_and_config_checklist.md, dependency_risk_checklist.md
@@ -63,8 +64,9 @@ codebase-health-assessor/
 │                                 #   cases/<id>/{case.json, repo/}}, adversarial_reviewer/{criteria.json, cases/<id>/{case.json,
 │                                 #   repo/}}, final_review_writer/{criteria.json, cases/<id>/case.json},
 │                                 #   coordinator/{criteria.json, cases/<id>/script.json};
-│                                 #   (planned) results/<agent>.json
-└── examples/                     # (planned) sample-client-repo/, substance-toy.json, sample-runs/
+│                                 #   results/README.md, (planned) results/<agent>.json
+└── examples/                     # sample-client-repo/{app.py, config.py, requirements.txt, package.json, README.md},
+                                  #   substance-toy.json, sample-runs/README.md, (planned) the recorded runs in sample-runs/
 ```
 
 `config.ROOT` is the repository root, and pricing and schemas load from there, so the tool runs from a source checkout, not from an installed wheel.
@@ -649,6 +651,11 @@ The scenarios, all on the workspace `acme-shop`: K1 scripts nothing, so every st
 | Eval coordinator trace | A client wrapper records each `tool_use` and the `tool_result` the next request carries; the scorers read only that | It is what the coordinator did and saw, refused launches and the exact `challenge_ids` it sent included, which `RunState` and the audit (no tool inputs, by invariant) do not keep | Reading `RunState` and the audit |
 | Eval coordinator halt | A `COORDINATOR_*` halt ends the case run with its reason as `error` and scores every criterion at its worst | The case cannot be scored, as with a `DispatchError` | Scoring the partial trace |
 | Eval coordinator scores | `review_coverage` also needs an accepted, reviewed draft; `escalation_correct` counts only obligations that can be violated; owed re-dispatches come from the first review of each step or draft | "No `PRECONDITION_FAILED`" alone passes a coordinator that does nothing, and counting every accepted step would let a coordinator that accepts a still-blocked step pass at 0.875 | The plan's one-line definitions |
+| README evidence map | One table under `## Evidence map` with the columns Item, What it shows and Paths, one row for each of the six rubric cards in order and then one for each content rule (final review writer, guardrails, substance, audit, decisions). `tests/test_readme_evidence_map.py` reads every backtick span in the Paths column as a repo-relative path or glob that must match something inside the repository, letter case exactly, refuses an absolute path, an empty, `.` or `..` segment and a glob that starts with a wildcard, refuses text outside backticks in the Paths column, and requires the rows to be the six cards in order and then the five rules. The same test parses each `poetry run assess` and `poetry run python -m evals.run` line of the README, `examples/sample-runs/README.md` and `evals/results/README.md` with the real argument parsers and checks that the paths they name exist | A grader finds evidence by content, so the map says where each rule lives, and a test keeps it true when files move | Paths in prose (a backtick span there is not always a path); a generated map (a second source) |
+| Rubric card names | The six cards are named as the planning session read them from the Stage 5 "What We Examine" screenshot: dispatch-only coordinator, sub-agents scoped to one workflow, adversarial review in its own context, version-controlled repo, Stage 4 continuity, mega-agent counterfeit | The Stage 5 page cannot be read through the connector. The names are not checked against it, so a wrong one costs a cell in the map and the constant in the test | Leaving the cards unnamed (the map would not answer the rubric) |
+| Evidence that needs a manual run | Until the eval results and the sample runs are committed, their rows name the directories `evals/results/` and `examples/sample-runs/`, each holding a README | A glob with no match fails the path test, and the READMEs make the directories exist. Once the files are committed, the rows can use `evals/results/*.json` and `examples/sample-runs/*/*/audit.jsonl`, and the test then enforces them | Globs over files that do not exist yet (the test fails); leaving the rows out |
+| Toy ratings | `examples/substance-toy.json` rates only the final review writer toy and keeps the shipped examiner ratings and the reviewer entry | One toy workflow opens `SUBSTANCE_ELEVATION`, and the writer is the workflow the shipped ratings already rate lowest | Two peripheral ratings (two edits, and the gate's subjects read less clearly); a toy examiner (misstates billable work) |
+| Sample client repo | A small Flask and npm project that plants at least one issue per examiner step: AWS's documented example keys in `config.py`; debug mode on every interface, wildcard CORS with credentials and TLS verification off in `app.py`; `requests==2.19.0` and `lodash` 4.17.15, which the committed OSV replay holds advisories for; unpinned `gunicorn` and `express`, and no lockfile. `tests/test_examples.py` pins each seed, and `examples/sample-runs/README.md` lists them | The sample runs need known issues to show, and the test keeps a seed from being fixed by accident | A copy of an eval case (its answer key is in the criteria) |
 
 ## Open questions
 

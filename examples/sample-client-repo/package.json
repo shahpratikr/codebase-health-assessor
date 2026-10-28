@@ -1,0 +1,10 @@
+{
+  "name": "orders-dashboard",
+  "version": "1.2.0",
+  "private": true,
+  "dependencies": {
+    "dayjs": "1.11.13",
+    "express": "*",
+    "lodash": "4.17.15"
+  }
+}
