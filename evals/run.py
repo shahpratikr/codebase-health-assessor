@@ -5,16 +5,25 @@ import math
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
 
-from assessor import audit, config, manifest
+from assessor import audit, config, llm, manifest
 from assessor.agents import runner
-from assessor.guardrails import DispatchError, ExaminationContext
+from assessor.guardrails import (
+    DispatchError,
+    DispositionContext,
+    ExaminationContext,
+    ReviewContext,
+    WriterContext,
+    validate,
+)
 from assessor.llm import NoCredentialsError, make_client
 from assessor.sandbox import Workspace
 from assessor.tools import deps
@@ -25,6 +34,10 @@ CRITERIA_FILE, CASES_DIR, CASE_FILE, REPO_DIR = "criteria.json", "cases", "case.
 REPLAY_FILE = "osv_replay.json"
 RESULTS_DIR, AUDIT_DIR = "results", ".runs"
 MIN_CRITERIA = 3
+WRITER = "final_review_writer"
+# The writer's tone judge: a model call of its own, outside the manifests, so it is pinned here and its prompt hash goes
+# into the writer's results.
+JUDGES = {WRITER: {"model": "claude-sonnet-5-5", "effort": "medium", "prompt": "evals/judges/tone.md"}}
 
 _TEXT = {"type": "string", "minLength": 1}
 # Printable ASCII without a space, as advisory IDs and package names are. \Z, not $: $ also matches before a newline.
@@ -83,6 +96,142 @@ _CASE = jsonschema.Draft202012Validator(
         "additionalProperties": False,
     }
 )
+_DEFECT_SEVERITY = {"enum": list(config.CHALLENGE_SEVERITIES)}
+_LINE = {"type": "integer", "minimum": 1}
+_EVIDENCE = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"file": _TEXT, "line": {"type": "integer"}},
+        "required": ["file", "line"],
+    },
+}
+_WRITER_INPUT_PROPERTIES = {
+    "disposition": {"type": "object"},
+    "examinations": {
+        "type": "object",
+        "additionalProperties": {
+            "type": "object",
+            "properties": {
+                "workflow": _TEXT,
+                "step": _TEXT,
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": _TEXT,
+                            "severity": {"enum": list(config.FINDING_SEVERITIES)},
+                            "file": _TEXT,
+                            "line": _LINE,
+                        },
+                        "required": ["id", "severity", "file", "line"],
+                    },
+                },
+            },
+            "required": ["workflow", "step", "findings"],
+        },
+    },
+    "reviews": {
+        "type": "object",
+        "additionalProperties": {
+            "type": "object",
+            "properties": {
+                "target_id": _TEXT,
+                "challenges": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"id": _TEXT, "evidence_checked": _EVIDENCE},
+                        "required": ["id", "evidence_checked"],
+                    },
+                },
+            },
+            "required": ["target_id", "challenges"],
+        },
+    },
+    "challenges": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "id": _TEXT,
+                "finding_id": {"type": "string"},
+                "lens": {"enum": list(config.LENSES)},
+                "severity": _DEFECT_SEVERITY,
+                "claim": _TEXT,
+                "evidence_checked": _EVIDENCE,
+                "rationale": _TEXT,
+            },
+            "required": ["id", "finding_id", "lens", "severity", "claim", "evidence_checked", "rationale"],
+            "additionalProperties": False,
+        },
+    },
+}
+_WRITER_INPUT_KEYS = list(_WRITER_INPUT_PROPERTIES)
+_WRITER_INPUT = jsonschema.Draft202012Validator(
+    {
+        "type": "object",
+        "properties": _WRITER_INPUT_PROPERTIES,
+        "required": _WRITER_INPUT_KEYS,
+        "additionalProperties": False,
+    }
+)
+_REVIEW_CASE = jsonschema.Draft202012Validator(
+    {
+        "type": "object",
+        "properties": {
+            "id": _TEXT,
+            "description": _TEXT,
+            "target_id": {"type": "string", "pattern": r"^(EX-[A-Z]+-v[1-9][0-9]*|DR-v[1-9][0-9]*)\Z"},
+            "target": {"type": "object"},
+            "input_context": {"type": "object"},
+            "defects": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"finding_id": _TEXT, "severity": _DEFECT_SEVERITY},
+                            "required": ["finding_id", "severity"],
+                            "additionalProperties": False,
+                        },
+                        {
+                            "type": "object",
+                            "properties": {"file": _TEXT, "line": _LINE, "severity": _DEFECT_SEVERITY},
+                            "required": ["file", "line", "severity"],
+                            "additionalProperties": False,
+                        },
+                    ]
+                },
+            },
+            "criteria": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _TEXT},
+        },
+        "required": ["id", "description", "target_id", "target", "input_context", "defects", "criteria"],
+        "additionalProperties": False,
+    }
+)
+_WRITE_CASE = jsonschema.Draft202012Validator(
+    {
+        "type": "object",
+        "properties": {
+            "id": _TEXT,
+            "description": _TEXT,
+            **_WRITER_INPUT_PROPERTIES,
+            "criteria": {"type": "array", "minItems": 1, "uniqueItems": True, "items": _TEXT},
+        },
+        "required": ["id", "description", *_WRITER_INPUT_KEYS, "criteria"],
+        "additionalProperties": False,
+    }
+)
+# rationale comes first so that the score follows the reasoning; the results do not keep it.
+JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {"rationale": {"type": "string"}, "score": {"type": "integer", "enum": [1, 2, 3, 4, 5]}},
+    "required": ["rationale", "score"],
+    "additionalProperties": False,
+}
+_JUDGEMENT = jsonschema.Draft202012Validator(JUDGE_SCHEMA)
 _REPLAY = jsonschema.Draft202012Validator(
     {
         "type": "object",
@@ -108,8 +257,9 @@ _REPLAY = jsonschema.Draft202012Validator(
 
 @dataclass(frozen=True)
 class EvalSet:
-    """One agent's manifest, its criteria in file order and its cases in ID order, each with its repository path and,
-    for an agent that queries OSV, its replay file and the advisory identifiers recorded in it.
+    """One agent's manifest, its criteria in file order and its cases in ID order, each with its repository path (a
+    writer's case has its directory instead) and, for an agent that queries OSV, its replay file and the advisory
+    identifiers recorded in it.
     """
 
     agent: str
@@ -166,9 +316,117 @@ def _examine(client: object, log: audit.AuditLog, agent_manifest: Mapping, case:
     return outputs, None
 
 
+class _Reads:
+    """Client wrapper that records, in call order, the path of every read_file call the agent makes.
+
+    The audit holds no tool inputs, so the files an agent opened can be seen only in its responses.
+    """
+
+    def __init__(self, client: object) -> None:
+        self.paths: list[str] = []
+        self._client = client
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+    def _create(self, **request: object) -> object:
+        response = self._client.beta.messages.create(**request)
+        self.paths += [
+            block.input["path"]
+            for block in response.content
+            if block.type == "tool_use" and block.name == "read_file" and isinstance(block.input.get("path"), str)
+        ]
+        return response
+
+
+def _review(client: object, log: audit.AuditLog, agent_manifest: Mapping, case: Mapping) -> tuple[dict, str | None]:
+    """Return the accepted review of the case's target and the paths the reviewer opened, and the code of the
+    DispatchError that ended the case run, or None.
+    """
+    target, target_id = case["target"], case["target_id"]
+    labels = (target["workflow"], target["step"]) if target_id.startswith("EX-") else (WRITER, None)
+    traced = _Reads(client)
+    ctx = ReviewContext(target_id, [finding["id"] for finding in target.get("findings", [])])
+    try:
+        review = runner.run_subagent(
+            traced,
+            log,
+            agent_manifest,
+            runner.review_task(target_id, target, case["input_context"]),
+            ctx,
+            workspace=Workspace(case["repo"]),
+            workflow=labels[0],
+            step=labels[1],
+            parent_step_id=None,
+        )
+    except DispatchError as error:
+        return {}, error.code
+    return {"review": review, "reads": traced.paths}, None
+
+
+def _judge_tone(client: object, log: audit.AuditLog, draft: Mapping) -> int:
+    """Return the tone judge's score of draft, from 1 to 5.
+
+    Raises DispatchError with the code of a failed model call, or SCHEMA_INVALID for an answer that is not JSON or does
+    not fit JUDGE_SCHEMA.
+    """
+    judge = JUDGES[WRITER]
+    try:
+        response = llm.call(
+            client,
+            log,
+            agent="tone_judge",
+            workflow=WRITER,
+            step=None,
+            parent_step_id=None,
+            model=judge["model"],
+            effort=judge["effort"],
+            system=(config.ROOT / judge["prompt"]).read_text(encoding="utf-8").strip(),
+            messages=[{"role": "user", "content": json.dumps(draft, indent=2)}],
+            output_schema=JUDGE_SCHEMA,
+        )
+    except llm.LLMError as error:
+        raise DispatchError(error.code, f"tone judge: the model call ended in {error.code}") from error
+    text = "".join(block.text for block in response.content if block.type == "text")
+    try:
+        answer = json.loads(text)
+    except (ValueError, RecursionError) as error:
+        raise DispatchError("SCHEMA_INVALID", "tone judge: the answer is not JSON") from error
+    if invalid := jsonschema.exceptions.best_match(_JUDGEMENT.iter_errors(answer)):
+        raise DispatchError("SCHEMA_INVALID", f"tone judge: the answer does not fit its schema: {invalid.message}")
+    return answer["score"]
+
+
+def _write(client: object, log: audit.AuditLog, agent_manifest: Mapping, case: Mapping) -> tuple[dict, str | None]:
+    """Return the accepted draft of the case's input and the tone judge's score of it, and the code of the
+    DispatchError that ended the case run, or None; a draft that was accepted stays in the outputs when the judge fails.
+    """
+    task = runner.writer_task(case["disposition"], case["examinations"], case["reviews"], case["challenges"])
+    steps = [(entry["workflow"], entry["step"]) for entry in case["disposition"]["steps"]]
+    try:
+        # The writer declares no tools, so its workspace is never read.
+        draft = runner.run_subagent(
+            client,
+            log,
+            agent_manifest,
+            task,
+            WriterContext(steps, scoring.input_ids(task)),
+            workspace=Workspace(case["directory"]),
+            workflow=agent_manifest["name"],
+            step=None,
+            parent_step_id=None,
+        )
+    except DispatchError as error:
+        return {}, error.code
+    try:
+        return {"draft": draft, "tone": _judge_tone(client, log, draft)}, None
+    except DispatchError as error:
+        return {"draft": draft}, error.code
+
+
 AGENTS: dict[str, Callable[[object, audit.AuditLog, Mapping, Mapping], tuple[dict, str | None]]] = {
     "security_examiner": _examine,
     "dependency_examiner": _examine,
+    "adversarial_reviewer": _review,
+    WRITER: _write,
 }
 
 
@@ -321,10 +579,182 @@ def _load_case(
     return loaded
 
 
+def _why(error: DispatchError) -> str:
+    return "; ".join([error.message, *error.details])
+
+
+def _problem(data: object, validator: jsonschema.Draft202012Validator) -> str | None:
+    """Return where and why validator refuses data, or None."""
+    if invalid := jsonschema.exceptions.best_match(validator.iter_errors(data)):
+        return f"{'/'.join(str(part) for part in invalid.absolute_path) or 'top level'}: {invalid.message}"
+    return None
+
+
+def _check_writer_input(source: Path, task: Mapping) -> None:
+    """Raise ValueError naming source unless task is a writer's input the coordinator could have built: its disposition
+    covers every step of the report once, each with an examination of that step, and the input holds those
+    examinations and one review of each, as the review schema and its challenge IDs have them.
+    """
+    orphans = [key for key, review in task["reviews"].items() if review["target_id"] not in task["examinations"]]
+    if orphans:
+        raise ValueError(f"{source}: review {orphans[0]} names no examination of the case")
+    reviewed = Counter(review["target_id"] for review in task["reviews"].values())
+    if twice := [key for key, count in reviewed.items() if count > 1]:
+        raise ValueError(f"{source}: examination {twice[0]} has two reviews; a writer's input holds only the latest")
+    steps = [tuple(key.split(".", 1)) for key in config.REPORT_TITLES]
+    of_step = {key: (item["workflow"], item["step"]) for key, item in task["examinations"].items()}
+    ctx = DispositionContext(steps, of_step, {review["target_id"] for review in task["reviews"].values()})
+    try:
+        validate("disposition", task["disposition"], ctx)
+    except DispatchError as error:
+        raise ValueError(f"{source}: disposition: {_why(error)}") from error
+    named = {step["examination_id"] for step in task["disposition"]["steps"]}
+    if extra := [key for key in task["examinations"] if key not in named]:
+        raise ValueError(f"{source}: examination {extra[0]} is named by no step of the disposition")
+    listed = [finding["id"] for item in task["examinations"].values() for finding in item["findings"]]
+    listed += [challenge["id"] for review in task["reviews"].values() for challenge in review["challenges"]]
+    listed += [challenge["id"] for challenge in task["challenges"]]
+    if repeated := [name for name, count in Counter(listed).items() if count > 1]:
+        raise ValueError(f"{source}: the ID {repeated[0]} appears twice in the input")
+    for key, review in task["reviews"].items():
+        findings = task["examinations"][review["target_id"]]["findings"]
+        bare = {**review, "challenges": [{k: v for k, v in item.items() if k != "id"} for item in review["challenges"]]}
+        try:
+            validate("review", bare, ReviewContext(review["target_id"], [finding["id"] for finding in findings]))
+        except DispatchError as error:
+            raise ValueError(f"{source}: review {key}: {_why(error)}") from error
+        expected = [f"{key}-C{number}" for number in range(1, len(review["challenges"]) + 1)]
+        if [item["id"] for item in review["challenges"]] != expected:
+            raise ValueError(f"{source}: review {key}: challenge IDs must run {key}-C1, {key}-C2 and on")
+
+
+def _serious(findings: list) -> bool:
+    return any(finding["severity"] in config.FAILING_SEVERITIES for finding in findings)
+
+
+def _check_examination(
+    source: Path, manifests: Mapping[str, Mapping], agent: str, workspace: Workspace, target_id: str, target: dict
+) -> None:
+    workflow, step = target.get("workflow"), target.get("step")
+    if workflow not in manifests[agent]["assignment"] or "steps" not in manifests[workflow]:
+        raise ValueError(f"{source}: target: {workflow!r} is not an assigned examiner workflow")
+    code = next((item["code"] for item in manifests[workflow]["steps"] if item["name"] == step), None)
+    if code is None:
+        raise ValueError(f"{source}: target: {step!r} is not a step of {workflow}")
+    if not target_id.startswith(f"EX-{code}-v"):
+        raise ValueError(f"{source}: target_id {target_id!r} is not an examination of {workflow}.{step}")
+    findings = target.get("findings")
+    if not isinstance(findings, list) or not all(isinstance(finding, dict) for finding in findings):
+        raise ValueError(f"{source}: target: findings must be a list of objects")
+    bare = {**target, "findings": [{key: value for key, value in item.items() if key != "id"} for item in findings]}
+    try:
+        stored = validate("examination", bare, ExaminationContext(workflow, step, code, workspace))
+    except DispatchError as error:
+        raise ValueError(f"{source}: target: {_why(error)}") from error
+    if stored != target:
+        raise ValueError(f"{source}: target: finding IDs must run {code}-1, {code}-2 and on, as the harness assigns")
+
+
+def _check_defects(source: Path, case: Mapping, workspace: Workspace) -> None:
+    examination = case["target_id"].startswith("EX-")
+    known = {finding["id"] for finding in case["target"]["findings"]} if examination else set()
+    listed: set[str] = set()
+    places = sorted((scoring.normal_path(item["file"]), item["line"]) for item in case["defects"] if "file" in item)
+    for (file, line), (other, later) in zip(places, places[1:]):
+        if file == other and later - line <= 2 * scoring.LINE_TOLERANCE:
+            raise ValueError(f"{source}: defects at lines {line} and {later} of {file} share a scoring window")
+    for number, defect in enumerate(case["defects"]):
+        where = f"{source}: defects/{number}"
+        if examination != ("finding_id" in defect):
+            named = "a finding" if "finding_id" in defect else "a file and line"
+            target = "an examination" if examination else "a draft"
+            raise ValueError(f"{where}: the defect names {named}, but the target is {target}")
+        if examination:
+            if defect["finding_id"] not in known:
+                raise ValueError(f"{where}: {defect['finding_id']!r} is not a finding of the target")
+            if defect["finding_id"] in listed:
+                raise ValueError(f"{where}: {defect['finding_id']!r} is listed twice")
+            listed.add(defect["finding_id"])
+            continue
+        try:
+            lines = workspace.read_lines(defect["file"])
+        except ValueError as error:
+            raise ValueError(f"{where}: {error}") from error
+        except OSError as error:
+            raise ValueError(f"{where}: {defect['file']}: {error.strerror or type(error).__name__}") from error
+        if defect["line"] > len(lines):
+            raise ValueError(f"{where}: {defect['file']} has {len(lines)} lines, not line {defect['line']}")
+        draft = [case["target"]["executive_summary"], *(item["prose"] for item in case["target"]["sections"])]
+        window = scoring.LINE_TOLERANCE
+        named = [place for text in draft for place in scoring.locations(text)]
+        if not any(
+            scoring.same_file(file, defect["file"])
+            and end - start <= scoring.MAX_RANGE
+            and start - window <= defect["line"] <= end + window
+            for file, start, end in named
+        ):
+            near = f"line {defect['line']} or within {window} lines of it"
+            raise ValueError(f"{where}: the draft never names {defect['file']} at {near}")
+
+
+def _load_review_case(directory: Path, manifests: Mapping[str, Mapping], agent: str, criteria: set[str]) -> dict:
+    source = directory / CASE_FILE
+    case = _read(source, _REVIEW_CASE)
+    if case["id"] != directory.name:
+        raise ValueError(f"{source}: id {case['id']!r} must match the directory name {directory.name!r}")
+    if unlisted := [name for name in case["criteria"] if name not in criteria]:
+        raise ValueError(f"{source}: criterion {unlisted[0]!r} is not in criteria.json")
+    workspace, target = Workspace(directory / REPO_DIR), case["target"]
+    examination = case["target_id"].startswith("EX-")
+    if examination:
+        _check_examination(source, manifests, agent, workspace, case["target_id"], target)
+        context = case["input_context"]
+        if (context.get("workflow"), context.get("step")) != (target["workflow"], target["step"]):
+            raise ValueError(f"{source}: input_context is not the task for {target['workflow']}.{target['step']}")
+    else:
+        if problem := _problem(case["input_context"], _WRITER_INPUT):
+            raise ValueError(f"{source}: input_context/{problem}")
+        _check_writer_input(source, case["input_context"])
+        task = case["input_context"]
+        steps = [(entry["workflow"], entry["step"]) for entry in task["disposition"]["steps"]]
+        try:
+            validate("writer_output", target, WriterContext(steps, scoring.input_ids(task)))
+        except DispatchError as error:
+            raise ValueError(f"{source}: target: {_why(error)}") from error
+    _check_defects(source, case, workspace)
+    needs = {
+        "defect_catch_rate": (bool(case["defects"]), "needs a case with defects"),
+        "false_challenge_rate": (not case["defects"], "needs a case with no defects"),
+        "evidence_verified": (
+            examination and _serious(target["findings"]),
+            "needs an examination with a critical or high finding",
+        ),
+    }
+    for name in case["criteria"]:
+        if name in needs and not needs[name][0]:
+            raise ValueError(f"{source}: {name} {needs[name][1]}")
+    return {**case, "repo": directory / REPO_DIR}
+
+
+def _load_write_case(directory: Path, criteria: set[str]) -> dict:
+    source = directory / CASE_FILE
+    case = _read(source, _WRITE_CASE)
+    if case["id"] != directory.name:
+        raise ValueError(f"{source}: id {case['id']!r} must match the directory name {directory.name!r}")
+    if unlisted := [name for name in case["criteria"] if name not in criteria]:
+        raise ValueError(f"{source}: criterion {unlisted[0]!r} is not in criteria.json")
+    _check_writer_input(source, case)
+    serious = any(_serious(item["findings"]) for item in case["examinations"].values())
+    if "high_severity_coverage" in case["criteria"] and not serious:
+        raise ValueError(f"{source}: high_severity_coverage needs a case with a critical or high finding")
+    return {**case, "directory": directory}
+
+
 def load_eval_set(agent: str, manifests: Mapping[str, Mapping], evals_dir: Path = EVALS_DIR) -> EvalSet:
     """Return the criteria and cases under evals_dir/<agent>, checked against the agent's manifest and each other
     before any model call: every case's expected line exists and holds its text, every expected vulnerable pin names a
-    package that the agent's osv_replay.json records advisories for, and every criterion has a case.
+    package that the agent's osv_replay.json records advisories for, a reviewer's target and a writer's input are ones
+    the harness could have produced, and every criterion has a case.
 
     Raises ValueError naming the path that breaks a rule; an OSError reading a file or listing the cases propagates.
     """
@@ -337,7 +767,13 @@ def load_eval_set(agent: str, manifests: Mapping[str, Mapping], evals_dir: Path 
     if not directories:
         raise ValueError(f"{folder / CASES_DIR}: no cases")
     named = {criterion["name"] for criterion in criteria}
-    cases = [_load_case(directory, manifests[agent], named, osv) for directory in directories]
+    role = manifests[agent]["role"]
+    if role == "reviewer":
+        cases = [_load_review_case(directory, manifests, agent, named) for directory in directories]
+    elif role == "writer":
+        cases = [_load_write_case(directory, named) for directory in directories]
+    else:
+        cases = [_load_case(directory, manifests[agent], named, osv) for directory in directories]
     listed = {name for case in cases for name in case["criteria"]}
     if unused := [name for name in named if name not in listed]:
         raise ValueError(f"{folder / CRITERIA_FILE}: no case lists {', '.join(sorted(unused))}")
@@ -348,7 +784,8 @@ def run_eval_set(
     client: object, eval_set: EvalSet, *, runs: int, runs_dir: Path, clock: Callable[[], datetime] = audit.utc_now
 ) -> dict:
     """Return the results of running every case of eval_set runs times, each case run with an audit log of its own
-    under runs_dir; the prompt and skills are hashed before the first call.
+    under runs_dir; the prompt, the skills and the agent's judge prompt, if it has one, are hashed before the first
+    call.
 
     A DispatchError ends only its case run, which records the code and scores its criteria at their worst; any other
     error from the agent's code propagates.
@@ -357,6 +794,8 @@ def run_eval_set(
     skills = hashlib.sha256()
     for path in eval_set.manifest["skills"]:
         skills.update((config.ROOT / path).read_bytes())
+    judge = JUDGES.get(eval_set.agent)
+    judge_sha256 = hashlib.sha256((config.ROOT / judge["prompt"]).read_bytes()).hexdigest() if judge else None
     pricing, entries = config.load_pricing(), []
     for number in range(1, runs + 1):
         for case in eval_set.cases:
@@ -379,12 +818,17 @@ def run_eval_set(
                 }
             )
     costs = [entry["cost_usd"] for entry in entries]
-    return {
+    pinned = {
         "agent": eval_set.agent,
         "model": eval_set.manifest["model"],
         "effort": eval_set.manifest["effort"],
         "prompt_sha256": prompt_sha256,
         "skills_sha256": skills.hexdigest(),
+    }
+    if judge:
+        pinned["judge"] = {"model": judge["model"], "effort": judge["effort"], "prompt_sha256": judge_sha256}
+    return {
+        **pinned,
         "generated_at": audit.timestamp(clock()),
         "runs": runs,
         "cases": entries,

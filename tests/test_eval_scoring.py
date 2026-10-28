@@ -15,7 +15,7 @@ import httpx2
 import pytest
 from anthropic.types.beta import BetaMessage
 
-from assessor import audit, config, llm, manifest, sandbox
+from assessor import audit, config, coordinator, guardrails, llm, manifest, sandbox
 from assessor.agents import runner
 from assessor.llm import NoCredentialsError
 from assessor.tools import deps
@@ -645,7 +645,7 @@ def test_the_injection_scan_detects_planted_text(text, found):
 
 
 ALLOWED_IMPORTS = {"assessor.config", "collections.abc", "posixpath", "re", "statistics"}
-ALLOWED_CONFIG = {"ADVISORY_STEP", "COMPARISONS", "FAILING_SEVERITIES", "FINDING_SEVERITIES"}
+ALLOWED_CONFIG = {"ADVISORY_STEP", "CHALLENGE_SEVERITIES", "COMPARISONS", "FAILING_SEVERITIES", "FINDING_SEVERITIES"}
 
 
 def _determinism_problems(source):
@@ -693,7 +693,7 @@ def test_the_determinism_scan_detects_a_planted_source_of_nondeterminism(source)
 
 
 def test_the_determinism_scan_accepts_the_config_sets_the_scorers_read():
-    names = ("FINDING_SEVERITIES", "FAILING_SEVERITIES", "COMPARISONS", "ADVISORY_STEP")
+    names = ("FINDING_SEVERITIES", "FAILING_SEVERITIES", "CHALLENGE_SEVERITIES", "COMPARISONS", "ADVISORY_STEP")
     source = "from assessor import config\n" + "\n".join(f"config.{name}" for name in names)
     assert _determinism_problems(source) == []
 
@@ -917,7 +917,7 @@ def _oracle(eval_set, runs=1, broken=(), workflow="security_examiner", failures=
 
 def _shipped_copy(tmp_path):
     root = tmp_path / "evals"
-    for agent in ("security_examiner", "dependency_examiner"):
+    for agent in ("security_examiner", "dependency_examiner", "adversarial_reviewer", "final_review_writer"):
         shutil.copytree(run.EVALS_DIR / agent, root / agent)
     return root
 
@@ -1139,13 +1139,23 @@ def test_main_prints_one_line_per_criterion_with_its_outcome(evaluate, capsys):
     ]
 
 
+def _every_agent_oracle():
+    return [
+        *_oracle(_load(run.EVALS_DIR)),
+        *_dependency_oracle(_load_dependency()),
+        *_review_oracle(_load_reviewer()),
+        *_write_oracle(_load_writer()),
+    ]
+
+
 def test_all_runs_every_registered_agent(evaluate):
-    script = [*_oracle(_load(run.EVALS_DIR)), *_dependency_oracle(_load_dependency())]
-    code, client, root = evaluate(script, agent="all")
+    code, client, root = evaluate(_every_agent_oracle(), agent="all")
     assert (code, client.script) == (0, [])
     assert {path.stem for path in (root / "results").glob("*.json")} == set(run.AGENTS) == {
         "security_examiner",
         "dependency_examiner",
+        "adversarial_reviewer",
+        "final_review_writer",
     }
 
 
@@ -1166,12 +1176,20 @@ def test_a_missed_threshold_of_any_agent_fails_an_all_run(evaluate, monkeypatch,
     script = [
         *_oracle(eval_set, broken={("S1", "secrets")}),
         *_dependency_oracle(_load_dependency()),
+        *_review_oracle(_load_reviewer()),
+        *_write_oracle(_load_writer()),
         *_oracle(eval_set, workflow="second_examiner"),
     ]
     code, _, _ = evaluate(script, agent="all", root=root)
     assert code == 1
     stems = {path.stem for path in (root / "results").glob("*.json")}
-    assert stems == {"security_examiner", "dependency_examiner", "second_examiner"}
+    assert stems == {
+        "security_examiner",
+        "dependency_examiner",
+        "adversarial_reviewer",
+        "final_review_writer",
+        "second_examiner",
+    }
 
 
 def test_a_second_run_replaces_the_results_of_the_first(evaluate):
@@ -2644,3 +2662,1616 @@ def test_the_address_scan_detects_a_planted_personal_address_and_accepts_the_lis
 
 def test_dependency_fixtures_and_the_replay_hold_no_personal_address():
     assert _address_problems(DEPENDENCY_DIR) == []
+
+
+REVIEWER = MANIFESTS["adversarial_reviewer"]
+WRITER = MANIFESTS["final_review_writer"]
+REVIEW_DIR = run.EVALS_DIR / "adversarial_reviewer"
+WRITE_DIR = run.EVALS_DIR / "final_review_writer"
+TONE_PROMPT = run.EVALS_DIR / "judges" / "tone.md"
+REVIEW_CRITERIA_BY_CASE = {
+    "R1": ["defect_catch_rate", "critical_calibration", "evidence_verified"],
+    "R2": ["false_challenge_rate", "evidence_verified"],
+    "R3": ["defect_catch_rate", "evidence_verified"],
+    "R4": ["defect_catch_rate", "critical_calibration"],
+    "R5": ["false_challenge_rate"],
+}
+REVIEW_DEFECTS_BY_CASE = {
+    "R1": [{"finding_id": "SEC-1", "severity": "critical"}, {"finding_id": "SEC-2", "severity": "critical"}],
+    "R2": [],
+    "R3": [{"finding_id": "CFG-1", "severity": "major"}, {"finding_id": "CFG-2", "severity": "major"}],
+    "R4": [
+        {"file": "deploy/ci.yml", "line": 14, "severity": "critical"},
+        {"file": "Dockerfile", "line": 6, "severity": "critical"},
+    ],
+    "R5": [],
+}
+PLANNED_REVIEW_THRESHOLDS = {
+    "defect_catch_rate": (0.8, "at_least"),
+    "false_challenge_rate": (0.2, "at_most"),
+    "critical_calibration": (0.8, "at_least"),
+    "evidence_verified": (0.8, "at_least"),
+}
+ALL_WRITE_CRITERIA = ["no_new_findings", "high_severity_coverage", "structure_valid_first_try", "tone_score"]
+WRITE_CRITERIA_BY_CASE = {
+    "W1": ["no_new_findings", "structure_valid_first_try", "tone_score"],
+    "W2": ALL_WRITE_CRITERIA,
+    "W3": ALL_WRITE_CRITERIA,
+    "W4": ALL_WRITE_CRITERIA,
+    "W5": ALL_WRITE_CRITERIA,
+}
+PLANNED_WRITE_THRESHOLDS = {
+    "no_new_findings": (1.0, "at_least"),
+    "high_severity_coverage": (0.9, "at_least"),
+    "structure_valid_first_try": (0.9, "at_least"),
+    "tone_score": (4.0, "at_least"),
+}
+WRITE_STEPS = [
+    ("security_examiner", "secrets", "SEC"),
+    ("security_examiner", "insecure_config", "CFG"),
+    ("dependency_examiner", "known_vulnerabilities", "VULN"),
+    ("dependency_examiner", "dependency_hygiene", "HYG"),
+]
+
+
+def _challenge(finding_id="", severity="major", at=(("x.py", 1),)):
+    return {
+        "finding_id": finding_id,
+        "lens": "challenge",
+        "severity": severity,
+        "claim": f"{MARKER} claim",
+        "evidence_checked": [{"file": file, "line": line} for file, line in at],
+        "rationale": f"{MARKER} rationale",
+    }
+
+
+def _verdict(challenges):
+    critical = any(challenge["severity"] == "critical" for challenge in challenges)
+    return "block" if critical else "challenge" if challenges else "pass"
+
+
+def _reviewed(*challenges, reads=()):
+    return {"review": {"verdict": _verdict(challenges), "challenges": list(challenges)}, "reads": list(reads)}
+
+
+def _targeting(*findings):
+    return {
+        "findings": [
+            {"id": f"F-{number}", "severity": severity, "file": file, "line": 1}
+            for number, (file, severity) in enumerate(findings, 1)
+        ]
+    }
+
+
+def test_a_challenge_to_the_defective_finding_catches_the_defect():
+    case = {"defects": [{"finding_id": "SEC-2", "severity": "critical"}]}
+    assert scoring.defect_catch_rate(case, _reviewed(_challenge("SEC-2", "critical"))) == 1.0
+
+
+@pytest.mark.parametrize("finding_id", ["SEC-1", "", "SEC-20", "sec-2"])
+def test_a_challenge_to_another_finding_or_to_none_does_not_catch_an_examination_defect(finding_id):
+    case = {"defects": [{"finding_id": "SEC-2", "severity": "critical"}]}
+    assert scoring.defect_catch_rate(case, _reviewed(_challenge(finding_id, at=(("config.py", 5),)))) == 0.0
+
+
+def test_the_share_of_defects_caught_is_the_catch_rate():
+    case = {"defects": [{"finding_id": "SEC-1", "severity": "major"}, {"finding_id": "SEC-2", "severity": "major"}]}
+    assert scoring.defect_catch_rate(case, _reviewed(_challenge("SEC-2"))) == 0.5
+
+
+def test_one_challenge_can_catch_only_the_defect_it_names():
+    case = {"defects": [{"finding_id": "SEC-1", "severity": "major"}, {"finding_id": "SEC-2", "severity": "major"}]}
+    assert scoring.defect_catch_rate(case, _reviewed(_challenge("SEC-1"), _challenge("SEC-1"))) == 0.5
+
+
+DRAFT_DEFECT = {"file": "Dockerfile", "line": 6, "severity": "critical"}
+
+
+@pytest.mark.parametrize("offset", [-2, -1, 0, 1, 2])
+def test_a_draft_defect_is_caught_by_evidence_within_two_lines_of_it(offset):
+    review = _reviewed(_challenge(severity="critical", at=(("Dockerfile", 6 + offset),)))
+    assert scoring.defect_catch_rate({"defects": [DRAFT_DEFECT]}, review) == 1.0
+
+
+@pytest.mark.parametrize("offset", [-3, 3])
+def test_a_draft_defect_is_not_caught_by_evidence_three_lines_away(offset):
+    review = _reviewed(_challenge(severity="critical", at=(("Dockerfile", 6 + offset),)))
+    assert scoring.defect_catch_rate({"defects": [DRAFT_DEFECT]}, review) == 0.0
+
+
+def test_a_draft_defect_is_not_caught_by_evidence_in_another_file():
+    review = _reviewed(_challenge(severity="critical", at=(("app.py", 6),)))
+    assert scoring.defect_catch_rate({"defects": [DRAFT_DEFECT]}, review) == 0.0
+
+
+@pytest.mark.parametrize("spelling", ["./Dockerfile", "x/../Dockerfile", "Dockerfile/"])
+def test_a_draft_defect_is_caught_by_evidence_that_spells_the_path_another_way(spelling):
+    review = _reviewed(_challenge(severity="critical", at=(("app.py", 1), (spelling, 6))))
+    assert scoring.defect_catch_rate({"defects": [DRAFT_DEFECT]}, review) == 1.0
+
+
+def test_a_case_without_defects_has_a_full_catch_rate():
+    assert scoring.defect_catch_rate({"defects": []}, _reviewed()) == 1.0
+
+
+@pytest.mark.parametrize("severity", ["minor", "major", "critical"])
+def test_any_challenge_to_a_correct_output_is_a_false_challenge(severity):
+    assert scoring.false_challenge_rate({"defects": []}, _reviewed(_challenge("SEC-1", severity))) == 1.0
+
+
+def test_a_pass_on_a_correct_output_is_no_false_challenge():
+    assert scoring.false_challenge_rate({"defects": []}, _reviewed()) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("severities", "verdict", "score"),
+    [
+        (["critical"], "block", 1.0),
+        (["critical"], "challenge", 0.0),
+        (["minor", "critical"], "block", 1.0),
+        (["major"], "challenge", 1.0),
+        (["major", "minor"], "challenge", 1.0),
+        (["major"], "block", 0.0),
+        (["minor"], "pass", 0.0),
+        ([], "pass", 1.0),
+        ([], "challenge", 0.0),
+        ([], "block", 0.0),
+    ],
+)
+def test_the_verdict_is_calibrated_when_it_is_the_one_the_defects_call_for(severities, verdict, score):
+    case = {"defects": [{"finding_id": f"SEC-{n}", "severity": s} for n, s in enumerate(severities, 1)]}
+    output = {"review": {"verdict": verdict, "challenges": []}, "reads": []}
+    assert scoring.critical_calibration(case, output) == score
+
+
+def _evidence_case(*findings):
+    return {"target": _targeting(*findings)}
+
+
+def test_evidence_is_verified_when_every_critical_or_high_finding_has_its_file_read():
+    case = _evidence_case(("a.py", "critical"), ("b.py", "high"))
+    assert scoring.evidence_verified(case, _reviewed(reads=["b.py", "a.py"])) == 1.0
+
+
+def test_the_verified_share_counts_the_critical_and_high_findings_whose_file_was_read():
+    case = _evidence_case(("a.py", "critical"), ("b.py", "high"), ("c.py", "high"), ("d.py", "critical"))
+    assert scoring.evidence_verified(case, _reviewed(reads=["a.py", "d.py", "e.py"])) == 0.5
+
+
+def test_a_file_that_was_not_read_leaves_its_finding_unverified():
+    assert scoring.evidence_verified(_evidence_case(("a.py", "high")), _reviewed(reads=["b.py"])) == 0.0
+
+
+def test_findings_of_one_file_are_verified_by_one_read():
+    case = _evidence_case(("a.py", "critical"), ("a.py", "high"))
+    assert scoring.evidence_verified(case, _reviewed(reads=["a.py"])) == 1.0
+
+
+@pytest.mark.parametrize("spelling", ["./a.py", "x/../a.py", "a.py/"])
+def test_a_read_that_spells_the_path_another_way_still_verifies_the_finding(spelling):
+    assert scoring.evidence_verified(_evidence_case(("a.py", "high")), _reviewed(reads=[spelling])) == 1.0
+
+
+def test_medium_and_low_findings_need_no_read_and_a_target_without_serious_ones_is_fully_verified():
+    case = _evidence_case(("a.py", "medium"), ("b.py", "low"))
+    assert scoring.evidence_verified(case, _reviewed()) == 1.0
+
+
+def _wcase(findings=None, decisions=None):
+    """Return a writer case holding findings by code, each (id number, severity, file, line)."""
+    findings, decisions = findings or {}, decisions or {}
+    steps, examinations = [], {}
+    for workflow, step, code in WRITE_STEPS:
+        examination_id = f"EX-{code}-v1"
+        steps.append(
+            {
+                "workflow": workflow,
+                "step": step,
+                "examination_id": examination_id,
+                "decision": decisions.get(code, "accept"),
+                "rationale": "r",
+            }
+        )
+        examinations[examination_id] = {
+            "workflow": workflow,
+            "step": step,
+            "findings": [
+                {"id": f"{code}-{number}", "severity": severity, "file": file, "line": line}
+                for number, severity, file, line in findings.get(code, [])
+            ],
+        }
+    disposition = {"steps": steps, "summary": "s"}
+    return {"disposition": disposition, "examinations": examinations, "reviews": {}, "challenges": []}
+
+
+def _draft(prose=None, summary="Overview.", order=None):
+    prose = prose or {}
+    keys = [(workflow, step, code) for workflow, step, code in WRITE_STEPS]
+    sections = [{"key": f"{w}.{s}", "prose": prose.get(code, "Nothing to report.")} for w, s, code in keys]
+    if order:
+        sections = [sections[index] for index in order]
+    return {"executive_summary": summary, "sections": sections}
+
+
+def _written(draft, tone=5):
+    return {"draft": draft, "tone": tone}
+
+
+SERIOUS = {"SEC": [(1, "critical", "config.py", 4), (2, "high", "app.py", 9)], "CFG": [(1, "medium", "app.py", 6)]}
+
+
+def test_every_critical_or_high_finding_cited_in_its_own_section_gives_full_coverage():
+    draft = _draft({"SEC": "Rotate the key [SEC-1]. Fix the setting [SEC-2].", "CFG": "Tighten CORS [CFG-1]."})
+    assert scoring.high_severity_coverage(_wcase(SERIOUS), _written(draft)) == 1.0
+
+
+def test_coverage_is_the_share_of_critical_and_high_findings_cited():
+    draft = _draft({"SEC": "Rotate the key [SEC-1].", "CFG": "Tighten CORS [CFG-1]."})
+    assert scoring.high_severity_coverage(_wcase(SERIOUS), _written(draft)) == 0.5
+
+
+def test_a_citation_in_another_section_or_the_summary_does_not_cover_a_finding():
+    draft = _draft({"CFG": "Rotate the key [SEC-1] and fix [SEC-2]."}, summary="See [SEC-1] and [SEC-2].")
+    assert scoring.high_severity_coverage(_wcase(SERIOUS), _written(draft)) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("prose", "covered"),
+    [
+        ("Rotate the key [SEC-1, SEC-2].", 1.0),
+        ("Rotate the key [SEC-1,SEC-2].", 1.0),
+        ("Rotate the key [SEC-1] [SEC-2].", 1.0),
+        ("Rotate the key [CWE-1, SEC-1 and SEC-2].", 1.0),
+        ("Rotate the key SEC-1 and SEC-2.", 0.0),
+        ("Rotate the key (SEC-1) and (SEC-2).", 0.0),
+        ("Rotate the key [SEC-10] and [SEC-20].", 0.0),
+        ("Rotate the key [XSEC-1] and [SEC-2x].", 0.0),
+    ],
+)
+def test_a_finding_is_cited_only_by_its_whole_id_inside_square_brackets(prose, covered):
+    case = _wcase({"SEC": [(1, "critical", "a.py", 1), (2, "high", "b.py", 1)]})
+    assert scoring.high_severity_coverage(case, _written(_draft({"SEC": prose}))) == covered
+
+
+def test_medium_and_low_findings_need_no_citation_and_a_run_without_serious_ones_has_full_coverage():
+    case = _wcase({"CFG": [(1, "medium", "a.py", 1), (2, "low", "b.py", 1)]})
+    assert scoring.high_severity_coverage(case, _written(_draft())) == 1.0
+
+
+def test_an_escalated_step_still_owes_a_citation_for_its_serious_findings():
+    case = _wcase({"SEC": [(1, "critical", "a.py", 1)]}, decisions={"SEC": "escalate"})
+    assert scoring.high_severity_coverage(case, _written(_draft())) == 0.0
+
+
+LOCATIONS = {"SEC": [(1, "critical", "config.py", 4)], "CFG": [(1, "medium", "src/app.py", 12)]}
+
+
+@pytest.mark.parametrize(
+    ("text", "score"),
+    [
+        ("The key sits in config.py:4 and needs rotating.", 1.0),
+        ("The key sits in `config.py` line 4 and needs rotating.", 1.0),
+        ("The key sits in config.py, line 4, and needs rotating.", 1.0),
+        ("The key sits in config.py (line 4).", 1.0),
+        ("The key sits on line 4 of config.py.", 1.0),
+        ("The key sits on line 4 in `config.py`.", 1.0),
+        ("The setting is in src/app.py:12 and is minor.", 1.0),
+        ("The setting is in ./src/app.py:12.", 1.0),
+        ("The key sits in config.py:9.", 0.0),
+        ("The key sits in `config.py` line 9.", 0.0),
+        ("The key sits in config.py, line 9, and needs rotating.", 0.0),
+        ("The key sits in config.py (line 9).", 0.0),
+        ("The key sits in config.py lines 9 to 12.", 0.0),
+        ("The key sits on line 9 of config.py.", 0.0),
+        ("A second key sits in other.py:4.", 0.0),
+        ("A second key sits on line 4 of other.py.", 0.0),
+        ("The setting is in app.py:12.", 1.0),
+        ("The setting is in lib/app.py:12.", 0.0),
+        ("Add a lockfile such as package-lock.json and keep config.py out of the image.", 1.0),
+        ("The sections run from line 4 to line 9.", 1.0),
+    ],
+)
+def test_prose_may_name_only_the_file_and_line_of_a_finding_it_was_given(text, score):
+    case = _wcase(LOCATIONS)
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": text}))) == score
+    assert scoring.no_new_findings(case, _written(_draft(summary=text))) == score
+
+
+def test_a_location_from_a_reviewers_challenge_in_the_input_may_be_named():
+    case = _wcase(LOCATIONS)
+    case["reviews"] = {
+        "RV-1": {
+            "target_id": "EX-SEC-v1",
+            "challenges": [{"id": "RV-1-C1", "evidence_checked": [{"file": "db.py", "line": 10}]}],
+        }
+    }
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": "Also see db.py:10."}))) == 1.0
+
+
+def test_a_draft_that_names_no_location_adds_no_finding():
+    assert scoring.no_new_findings(_wcase(LOCATIONS), _written(_draft())) == 1.0
+
+
+def test_sections_in_the_order_of_the_disposition_are_well_structured():
+    assert scoring.structure_valid_first_try(_wcase(), _written(_draft())) == 1.0
+
+
+@pytest.mark.parametrize("order", [[1, 0, 2, 3], [3, 2, 1, 0]])
+def test_sections_in_another_order_are_not_well_structured(order):
+    assert scoring.structure_valid_first_try(_wcase(), _written(_draft(order=order))) == 0.0
+
+
+@pytest.mark.parametrize("tone", [1, 3, 4, 5])
+def test_the_tone_score_is_the_judges_score(tone):
+    assert scoring.tone_score(_wcase(), _written(_draft(), tone=tone)) == float(tone)
+
+
+def test_the_new_agents_have_a_scorer_for_each_planned_criterion():
+    assert set(scoring.SCORERS["adversarial_reviewer"]) == set(PLANNED_REVIEW_THRESHOLDS)
+    assert set(scoring.SCORERS["final_review_writer"]) == set(PLANNED_WRITE_THRESHOLDS)
+
+
+def _copy_set(tmp_path, agent):
+    root = tmp_path / "evals"
+    shutil.copytree(run.EVALS_DIR / agent, root / agent)
+    return root
+
+
+def _edit_case(root, agent, case_id, change):
+    path = root / agent / "cases" / case_id / "case.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    change(data)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _load_reviewer(root=run.EVALS_DIR):
+    return run.load_eval_set("adversarial_reviewer", MANIFESTS, root)
+
+
+def _load_writer(root=run.EVALS_DIR):
+    return run.load_eval_set("final_review_writer", MANIFESTS, root)
+
+
+def _thresholds(eval_set):
+    return {item["name"]: (item["threshold"], item["comparison"]) for item in eval_set.criteria}
+
+
+def test_the_reviewer_set_holds_the_planned_cases_criteria_and_defects():
+    eval_set = _load_reviewer()
+    assert [case["id"] for case in eval_set.cases] == ["R1", "R2", "R3", "R4", "R5"]
+    assert _thresholds(eval_set) == PLANNED_REVIEW_THRESHOLDS
+    assert {case["id"]: case["criteria"] for case in eval_set.cases} == REVIEW_CRITERIA_BY_CASE
+    assert {case["id"]: case["defects"] for case in eval_set.cases} == REVIEW_DEFECTS_BY_CASE
+    assert {case["id"]: case["target_id"] for case in eval_set.cases} == {
+        "R1": "EX-SEC-v1",
+        "R2": "EX-SEC-v1",
+        "R3": "EX-CFG-v1",
+        "R4": "DR-v1",
+        "R5": "DR-v1",
+    }
+
+
+def test_the_writer_set_holds_the_planned_cases_and_criteria():
+    eval_set = _load_writer()
+    assert [case["id"] for case in eval_set.cases] == ["W1", "W2", "W3", "W4", "W5"]
+    assert _thresholds(eval_set) == PLANNED_WRITE_THRESHOLDS
+    assert {case["id"]: case["criteria"] for case in eval_set.cases} == WRITE_CRITERIA_BY_CASE
+    assert not any((WRITE_DIR / "cases" / case["id"] / "repo").exists() for case in eval_set.cases)
+
+
+def _serious(case):
+    return [
+        finding["id"]
+        for examination in case["examinations"].values()
+        for finding in examination["findings"]
+        if finding["severity"] in config.FAILING_SEVERITIES
+    ]
+
+
+def test_the_writer_cases_hold_the_planned_scenarios():
+    cases = {case["id"]: case for case in _load_writer().cases}
+    order = list(config.REPORT_TITLES)
+    for case in cases.values():
+        assert [f"{step['workflow']}.{step['step']}" for step in case["disposition"]["steps"]] == order
+    escalated = [
+        name
+        for name, case in cases.items()
+        if any(step["decision"] == "escalate" for step in case["disposition"]["steps"])
+    ]
+    assert escalated == ["W3"]
+    assert _serious(cases["W1"]) == []
+    assert all(_serious(cases[name]) for name in ("W2", "W3", "W4", "W5"))
+    w2_steps_without_serious = [
+        key for key, examination in cases["W2"]["examinations"].items()
+        if not any(finding["severity"] in config.FAILING_SEVERITIES for finding in examination["findings"])
+    ]
+    assert w2_steps_without_serious
+    assert sum(len(examination["findings"]) for examination in cases["W4"]["examinations"].values()) >= 12
+
+
+def test_the_overruled_challenge_case_accepts_a_step_whose_examiner_rejected_the_reviewers_challenge():
+    case = next(case for case in _load_writer().cases if case["id"] == "W5")
+    rejected = {
+        examination["step"]
+        for examination in case["examinations"].values()
+        for response in examination["challenge_responses"]
+        if response["response"] == "rejected"
+    }
+    challenged = {
+        case["examinations"][review["target_id"]]["step"]
+        for review in case["reviews"].values()
+        if review["verdict"] == "challenge"
+    }
+    accepted = {step["step"] for step in case["disposition"]["steps"] if step["decision"] == "accept"}
+    assert rejected and rejected == challenged and rejected <= accepted
+
+
+def _context_problems(context):
+    """Return how an examination case's input_context differs from the task the harness builds for its examiner."""
+    manifest_ = MANIFESTS[context["workflow"]]
+    built = runner.examiner_task(manifest_, context["step"], workspace_label="repo", challenges=[], note="")
+    return [key for key in built if context.get(key) != built[key]] + [key for key in context if key not in built]
+
+
+def test_the_input_context_of_an_examination_case_is_the_task_the_examiner_was_given():
+    cases = [case for case in _load_reviewer().cases if case["target_id"].startswith("EX-")]
+    assert len(cases) == 3
+    assert [_context_problems(case["input_context"]) for case in cases] == [[], [], []]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda context: context.update(checklist=context["checklist"] + " Also check x."),
+        lambda context: context.update(workspace="client-repo"),
+        lambda context: context.update(note="look at db.py"),
+        lambda context: context.update(extra=1),
+        lambda context: context.pop("challenges"),
+    ],
+    ids=["stale-checklist", "other-workspace", "other-note", "extra-key", "missing-key"],
+)
+def test_the_input_context_check_detects_a_planted_difference(change):
+    context = copy.deepcopy(_load_reviewer().cases[0]["input_context"])
+    change(context)
+    assert _context_problems(context)
+
+
+def _writer_tasks():
+    cases = _load_writer().cases + [case for case in _load_reviewer().cases if case["target_id"].startswith("DR-")]
+    return [case.get("input_context", case) for case in cases]
+
+
+def test_the_ids_the_eval_harness_allows_a_draft_to_cite_are_the_ones_the_coordinator_allows():
+    tasks = _writer_tasks()
+    assert len(tasks) == 7
+    for task in tasks:
+        built = runner.writer_task(task["disposition"], task["examinations"], task["reviews"], task["challenges"])
+        assert scoring.input_ids(built) == coordinator._harness_ids(built)
+
+
+def test_the_allowed_ids_hold_examinations_findings_reviews_and_every_challenge():
+    task = {
+        "examinations": {"EX-SEC-v1": {"findings": [{"id": "SEC-1"}, {"id": "SEC-2"}]}},
+        "reviews": {"RV-1": {"challenges": [{"id": "RV-1-C1"}]}},
+        "challenges": [{"id": "RV-3-C2"}],
+    }
+    assert scoring.input_ids(task) == {"EX-SEC-v1", "SEC-1", "SEC-2", "RV-1", "RV-1-C1", "RV-3-C2"}
+
+
+def test_the_new_fixtures_hold_no_credential_beyond_the_documented_and_invented_ones():
+    for directory in (REVIEW_DIR, WRITE_DIR):
+        assert len([path for path in directory.rglob("*") if path.is_file()]) >= 5
+        assert _secret_problems(directory) == []
+
+
+BROKEN_REVIEW_CASES = [
+    pytest.param("R1", lambda c: c.update(target_id="XX-1"), "target_id", id="target-id-neither-examination-nor-draft"),
+    pytest.param("R1", lambda c: c["target"]["findings"][0].update(line=99), "is not a line of config.py",
+                 id="finding-line-past-the-file"),
+    pytest.param("R1", lambda c: c["target"]["findings"][0].update(file="nope.py"), "nope.py",
+                 id="finding-file-missing"),
+    pytest.param("R1", lambda c: c["target"]["findings"][1].update(id="SEC-5"), "finding IDs",
+                 id="finding-ids-not-in-sequence"),
+    pytest.param("R1", lambda c: c["target"].update(workflow="adversarial_reviewer"), "assigned examiner",
+                 id="workflow-the-reviewer-is-not-assigned"),
+    pytest.param("R1", lambda c: c["target"].update(step="known_vulnerabilities"), "is not a step of",
+                 id="step-of-another-examiner"),
+    pytest.param("R1", lambda c: c["target"]["findings"][0].update(advisory_ids=["GHSA-aaaa-bbbb-cccc"]),
+                 "advisory_ids", id="advisory-in-a-secrets-examination"),
+    pytest.param("R1", lambda c: c.pop("input_context"), "input_context", id="no-input-context"),
+    pytest.param("R4", lambda c: c["target"]["sections"][0].update(prose="Rotate it [SEC-9]."), "SEC-9",
+                 id="draft-cites-an-id-the-input-lacks"),
+    pytest.param("R4", lambda c: c["target"]["sections"].pop(), "is missing", id="draft-misses-a-section"),
+    pytest.param("R4", lambda c: c["target"]["sections"][0].update(prose="# Secrets\nRotate it."), "heading",
+                 id="draft-line-renders-as-a-heading"),
+    pytest.param("R4", lambda c: c["input_context"]["disposition"]["steps"].pop(), "is missing",
+                 id="disposition-misses-a-step"),
+    pytest.param("R1", lambda c: c["defects"][0].update(finding_id="SEC-9"), "is not a finding of the target",
+                 id="defect-names-no-finding"),
+    pytest.param("R4", lambda c: c["defects"].__setitem__(0, {"finding_id": "SEC-1", "severity": "critical"}),
+                 "draft", id="finding-defect-in-a-draft-case"),
+    pytest.param("R1", lambda c: c["defects"].__setitem__(0, {"file": "config.py", "line": 5, "severity": "critical"}),
+                 "examination", id="location-defect-in-an-examination-case"),
+    pytest.param("R4", lambda c: c["defects"][0].update(line=99), "not line 99", id="defect-line-past-the-file"),
+    pytest.param("R4", lambda c: c["defects"][0].update(file="nope.yml"), "nope.yml", id="defect-file-missing"),
+    pytest.param("R4", lambda c: c["defects"][0].update(severity="fatal"), "fatal",
+                 id="defect-severity-outside-the-set"),
+    pytest.param("R2", lambda c: c["criteria"].append("defect_catch_rate"), "needs a case with defects",
+                 id="catch-rate-without-defects"),
+    pytest.param("R1", lambda c: c["criteria"].append("false_challenge_rate"), "needs a case with no defects",
+                 id="false-challenge-rate-with-defects"),
+    pytest.param("R4", lambda c: c["criteria"].append("evidence_verified"), "critical or high finding",
+                 id="evidence-verified-on-a-draft"),
+    pytest.param("R1", lambda c: c["criteria"].append("tone_score"), "not in criteria.json",
+                 id="criterion-of-another-agent"),
+    pytest.param("R4", lambda c: c["defects"][1].update(file="deploy/ci.yml", line=16), "share a scoring window",
+                 id="defects-in-one-window"),
+    pytest.param("R4", lambda c: c["defects"][1].update(file="deploy/ci.yml", line=10), "share a scoring window",
+                 id="defects-four-lines-apart"),
+    pytest.param("R1", lambda c: c["target"].update(workflow="final_review_writer"), "assigned examiner",
+                 id="workflow-without-steps"),
+    pytest.param("R1", lambda c: c["target"].update(findings="none"), "findings must be a list of objects",
+                 id="findings-not-a-list"),
+    pytest.param("R1", lambda c: c["target"].update(findings=["SEC-1"]), "findings must be a list of objects",
+                 id="finding-not-an-object"),
+    pytest.param("R4", lambda c: c["input_context"].pop("reviews"), "input_context", id="draft-context-incomplete"),
+    pytest.param("R1", lambda c: c.update(target_id="EX-HYG-v1"), "is not an examination of",
+                 id="target-id-of-another-step"),
+    pytest.param("R1", lambda c: c["input_context"].update(step="insecure_config"), "input_context",
+                 id="context-of-another-step"),
+    pytest.param("R1", lambda c: c["defects"].append(dict(c["defects"][0])), "listed twice", id="defect-listed-twice"),
+    pytest.param("R4", lambda c: c["target"]["sections"][0].update(
+        prose=c["target"]["sections"][0]["prose"].replace("ci.yml, line 14", "ci.yml, lines 1-500")),
+        "never names deploy/ci.yml", id="draft-names-a-defects-file-with-a-range-too-wide"),
+    pytest.param("R4", lambda c: c["target"]["sections"][1].update(prose="One finding concerns app.py [CFG-1]."),
+                 "never names Dockerfile", id="draft-never-names-a-defects-file"),
+    pytest.param("R4", lambda c: c["target"]["sections"][1].update(
+        prose="One finding concerns app.py [CFG-1]. The Dockerfile is not discussed."),
+        "never names Dockerfile", id="draft-names-a-defects-file-without-its-line"),
+    pytest.param("R4", lambda c: c["target"]["sections"][1].update(
+        prose="One finding concerns app.py [CFG-1]. The Dockerfile at line 20 is odd."),
+        "never names Dockerfile", id="draft-names-a-defects-file-at-another-line"),
+    pytest.param("R4", lambda c: c["input_context"]["examinations"].update(
+        {"EX-SEC-v9": copy.deepcopy(c["input_context"]["examinations"]["EX-SEC-v1"])}), "named by no step",
+        id="examination-the-disposition-does-not-name"),
+    pytest.param("R4", lambda c: c["input_context"]["reviews"].update(
+        {"RV-9": copy.deepcopy(c["input_context"]["reviews"]["RV-1"])}), "has two reviews",
+        id="two-reviews-of-one-examination"),
+    pytest.param("R4", lambda c: c["input_context"]["reviews"]["RV-1"].update(verdict="block"), "does not match",
+                 id="review-verdict-without-a-critical-challenge"),
+    pytest.param("R1", lambda c: c.update(id="R9"), "must match the directory name", id="id-not-the-directory"),
+    pytest.param("R1", lambda c: c.update(extra=1), "Additional properties", id="unknown-key"),
+    pytest.param("R1", lambda c: c.pop("defects"), "'defects' is a required property", id="missing-key"),
+]
+
+
+@pytest.mark.parametrize(("case_id", "mutate", "fragment"), BROKEN_REVIEW_CASES)
+def test_a_reviewer_case_that_breaks_a_rule_is_refused_naming_its_file(tmp_path, case_id, mutate, fragment):
+    root = _copy_set(tmp_path, "adversarial_reviewer")
+    _edit_case(root, "adversarial_reviewer", case_id, mutate)
+    with pytest.raises(ValueError) as raised:
+        _load_reviewer(root)
+    assert str(root / "adversarial_reviewer" / "cases" / case_id / "case.json") in str(raised.value)
+    assert fragment in str(raised.value)
+
+
+def test_defects_of_one_file_five_lines_apart_do_not_share_a_window(tmp_path):
+    root = _copy_set(tmp_path, "adversarial_reviewer")
+    def apart(case):
+        case["defects"][1].update(file="deploy/ci.yml", line=9)
+        case["target"]["sections"][0]["prose"] += " In deploy/ci.yml, line 9 is odd too."
+
+    _edit_case(root, "adversarial_reviewer", "R4", apart)
+    assert [case["id"] for case in _load_reviewer(root).cases] == ["R1", "R2", "R3", "R4", "R5"]
+
+
+def test_an_evidence_verified_case_whose_findings_are_all_medium_is_refused(tmp_path):
+    root = _copy_set(tmp_path, "adversarial_reviewer")
+
+    def soften(case):
+        for finding in case["target"]["findings"]:
+            finding["severity"] = "medium"
+
+    _edit_case(root, "adversarial_reviewer", "R2", soften)
+    with pytest.raises(ValueError, match="critical or high finding"):
+        _load_reviewer(root)
+
+
+BROKEN_WRITER_CASES = [
+    pytest.param("W1", lambda c: c["disposition"]["steps"].pop(), "is missing", id="disposition-misses-a-step"),
+    pytest.param("W1", lambda c: (c["examinations"].pop("EX-SEC-v1"), c["reviews"].pop("RV-1")),
+                 "is not an examination of", id="disposition-names-no-examination"),
+    pytest.param("W1", lambda c: c["reviews"].clear(), "has no review", id="examination-without-a-review"),
+    pytest.param("W2", lambda c: c["reviews"]["RV-1"].update(target_id="EX-ZZZ-v9"), "no examination",
+                 id="review-of-no-examination"),
+    pytest.param("W1", lambda c: c["criteria"].append("high_severity_coverage"), "critical or high finding",
+                 id="coverage-without-a-serious-finding"),
+    pytest.param("W1", lambda c: c["criteria"].append("defect_catch_rate"), "not in criteria.json",
+                 id="criterion-of-another-agent"),
+    pytest.param("W1", lambda c: c["examinations"]["EX-CFG-v1"]["findings"][0].pop("line"), "line",
+                 id="finding-without-a-line"),
+    pytest.param("W2", lambda c: c["examinations"].update(
+        {"EX-SEC-v9": copy.deepcopy(c["examinations"]["EX-SEC-v1"])}), "named by no step",
+        id="examination-the-disposition-does-not-name"),
+    pytest.param("W2", lambda c: c["reviews"].update({"RV-9": copy.deepcopy(c["reviews"]["RV-1"])}),
+                 "has two reviews", id="two-reviews-of-one-examination"),
+    pytest.param("W5", lambda c: c["challenges"][0].pop("claim"), "'claim' is a required property",
+                 id="challenge-to-the-draft-without-a-claim"),
+    pytest.param("W5", lambda c: c["challenges"][0].update(extra=1), "Additional properties",
+                 id="challenge-to-the-draft-with-an-unknown-key"),
+    pytest.param("W5", lambda c: c["challenges"][0].update(id="RV-3-C1"), "appears twice",
+                 id="challenge-id-of-a-review-challenge"),
+    pytest.param("W2", lambda c: c["examinations"]["EX-SEC-v1"]["findings"].append(
+        copy.deepcopy(c["examinations"]["EX-SEC-v1"]["findings"][0])), "appears twice", id="finding-id-twice"),
+    pytest.param("W3", lambda c: c["reviews"]["RV-2"]["challenges"][0].update(id="X-1"), "challenge IDs",
+                 id="challenge-id-not-in-sequence"),
+    pytest.param("W3", lambda c: c["reviews"]["RV-2"]["challenges"][0].update(finding_id="SEC-9"),
+                 "is not a finding of", id="challenge-to-no-finding"),
+    pytest.param("W3", lambda c: c["reviews"]["RV-2"].update(verdict="challenge"), "does not match",
+                 id="review-verdict-with-a-critical-challenge"),
+    pytest.param("W1", lambda c: c.update(id="W9"), "must match the directory name", id="id-not-the-directory"),
+    pytest.param("W1", lambda c: c.update(extra=1), "Additional properties", id="unknown-key"),
+    pytest.param("W1", lambda c: c.pop("challenges"), "'challenges' is a required property", id="missing-key"),
+]
+
+
+@pytest.mark.parametrize(("case_id", "mutate", "fragment"), BROKEN_WRITER_CASES)
+def test_a_writer_case_that_breaks_a_rule_is_refused_naming_its_file(tmp_path, case_id, mutate, fragment):
+    root = _copy_set(tmp_path, "final_review_writer")
+    _edit_case(root, "final_review_writer", case_id, mutate)
+    with pytest.raises(ValueError) as raised:
+        _load_writer(root)
+    assert str(root / "final_review_writer" / "cases" / case_id / "case.json") in str(raised.value)
+    assert fragment in str(raised.value)
+
+
+def test_the_judge_model_is_priced_and_its_schema_uses_only_the_structured_output_keywords():
+    judge = run.JUDGES["final_review_writer"]
+    assert judge["model"] in config.load_pricing()
+    assert judge["effort"] in config.EFFORTS
+    assert (config.ROOT / judge["prompt"]).is_file()
+    assert _schema_keywords(run.JUDGE_SCHEMA) <= {"type", "properties", "required", "enum", "items",
+                                                  "additionalProperties"}
+
+
+def _schema_keywords(schema):
+    found = set(schema)
+    for child in schema.get("properties", {}).values():
+        found |= _schema_keywords(child)
+    if isinstance(schema.get("items"), dict):
+        found |= _schema_keywords(schema["items"])
+    return found
+
+
+def test_the_keyword_scan_detects_a_planted_keyword_outside_the_subset():
+    planted = {"type": "object", "properties": {"score": {"type": "integer", "minimum": 1}}}
+    assert "minimum" in _schema_keywords(planted)
+
+
+def _read_calls(*paths):
+    blocks = [
+        {"type": "tool_use", "id": f"toolu_{number}", "name": "read_file", "input": {"path": path, "start_line": 1}}
+        for number, path in enumerate(paths, 1)
+    ]
+    return _message(blocks, "tool_use")
+
+
+def _defect_challenge(case, defect):
+    if "finding_id" in defect:
+        finding = next(item for item in case["target"]["findings"] if item["id"] == defect["finding_id"])
+        at = ((finding["file"], finding["line"]),)
+    else:
+        at = ((defect["file"], defect["line"]),)
+    return _challenge(defect.get("finding_id", ""), defect["severity"], at)
+
+
+def _review_oracle(eval_set, runs=1, reads=None, challenges=None, broken=()):
+    """Return the script of a reviewer that challenges exactly the seeded defects and opens the file of every critical
+    or high finding of an examination.
+
+    reads and challenges map a case to the paths it opens and the challenges it raises instead; a case in broken
+    answers with text that is not JSON.
+    """
+    reads, challenges = reads or {}, challenges or {}
+    script = []
+    for _ in range(runs):
+        for case in eval_set.cases:
+            findings = case["target"].get("findings", [])
+            serious = sorted({item["file"] for item in findings if item["severity"] in config.FAILING_SEVERITIES})
+            opened = reads.get(case["id"], serious)
+            if opened:
+                script.append(_read_calls(*opened))
+            if case["id"] in broken:
+                script.append(_not_json())
+                continue
+            raised = challenges.get(case["id"], [_defect_challenge(case, defect) for defect in case["defects"]])
+            answer = {"target_id": case["target_id"], "verdict": _verdict(raised), "summary": "Checked.",
+                      "challenges": raised}
+            script.append(_answer(answer))
+    return script
+
+
+def _faithful_draft(case):
+    sections = []
+    for step in case["disposition"]["steps"]:
+        cited = ", ".join(finding["id"] for finding in case["examinations"][step["examination_id"]]["findings"])
+        prose = f"The findings are explained here [{cited}]." if cited else "No findings were reported."
+        sections.append({"key": f"{step['workflow']}.{step['step']}", "prose": prose})
+    return {"executive_summary": "The repository needs attention.", "sections": sections}
+
+
+def _judged(score):
+    return _answer({"rationale": "Polite and direct.", "score": score})
+
+
+def _write_oracle(eval_set, runs=1, tone=5, drafts=None, judged=None, unjudged=()):
+    """Return the script of a writer that explains every finding of its input faithfully and of a judge that gives
+    every draft the tone score.
+
+    drafts and judged map a case to the draft the writer returns and the response the judge gives instead; a case in
+    unjudged gets no judge call, as when its draft is refused.
+    """
+    drafts, judged = drafts or {}, judged or {}
+    script = []
+    for _ in range(runs):
+        for case in eval_set.cases:
+            script.append(_answer(drafts.get(case["id"], _faithful_draft(case))))
+            if case["id"] not in unjudged:
+                script.append(judged.get(case["id"], _judged(tone)))
+    return script
+
+
+def _review_summary(root):
+    return {item["criterion"]: item["passed_all_runs"] for item in _results(root, "adversarial_reviewer")["summary"]}
+
+
+def _review_scores(root):
+    return {entry["case_id"]: entry["scores"] for entry in _results(root, "adversarial_reviewer")["cases"]}
+
+
+def test_a_reviewer_that_catches_every_defect_and_raises_nothing_else_meets_every_threshold(evaluate):
+    code, client, root = evaluate(_review_oracle(_load_reviewer()), agent="adversarial_reviewer")
+    assert (code, client.script) == (0, [])
+    assert _review_summary(root) == dict.fromkeys(PLANNED_REVIEW_THRESHOLDS, True)
+    scores = _review_scores(root)
+    assert scores["R1"] == {"defect_catch_rate": 1.0, "critical_calibration": 1.0, "evidence_verified": 1.0}
+    assert scores["R5"] == {"false_challenge_rate": 0.0}
+
+
+def test_each_reviewer_request_is_the_real_agents_request_with_the_case_as_a_fresh_task(evaluate):
+    eval_set = _load_reviewer()
+    code, client, _ = evaluate(_review_oracle(eval_set), agent="adversarial_reviewer")
+    assert code == 0
+    schema = json.loads((config.ROOT / REVIEWER["output_schema"]).read_text(encoding="utf-8"))
+    first = client.requests[0]
+    assert first["model"] == REVIEWER["model"]
+    assert first["system"] == (config.ROOT / REVIEWER["prompt"]).read_text(encoding="utf-8").strip()
+    assert first["output_config"] == {"effort": REVIEWER["effort"], "format": {"type": "json_schema", "schema": schema}}
+    assert [tool["name"] for tool in first["tools"]] == ["read_file"]
+    assert first["betas"] == [config.FALLBACK_BETA] and first["fallbacks"] == config.FALLBACKS
+    case = eval_set.cases[0]
+    assert [message["role"] for message in first["messages"]] == ["user"]
+    assert json.loads(first["messages"][0]["content"]) == {
+        "target_id": case["target_id"],
+        "target": case["target"],
+        "input_context": case["input_context"],
+    }
+
+
+def test_the_reviewer_reads_the_case_repository_through_its_tool(evaluate):
+    code, client, _ = evaluate(_review_oracle(_load_reviewer()), agent="adversarial_reviewer")
+    assert code == 0
+    results = client.requests[1]["messages"][-1]["content"]
+    assert [result["is_error"] for result in results] == [False, False, False]
+    assert any("AWS_REGION" in result["content"] for result in results)
+
+
+def test_the_files_the_reviewer_opened_decide_evidence_verified(evaluate):
+    reads = {"R1": ["config.py"], "R2": [], "R3": ["views.py", "client.py"]}
+    code, _, root = evaluate(_review_oracle(_load_reviewer(), reads=reads), agent="adversarial_reviewer")
+    scores = _review_scores(root)
+    assert scores["R1"]["evidence_verified"] == pytest.approx(1 / 3)
+    assert scores["R2"]["evidence_verified"] == 0.0
+    assert scores["R3"]["evidence_verified"] == 1.0
+    assert code == 1
+    assert _review_summary(root)["evidence_verified"] is False
+
+
+def test_a_read_of_the_file_of_a_medium_finding_verifies_no_critical_or_high_finding(evaluate):
+    _, _, root = evaluate(_review_oracle(_load_reviewer(), reads={"R3": ["app.py"]}), agent="adversarial_reviewer")
+    assert _review_scores(root)["R3"]["evidence_verified"] == 0.0
+
+
+def test_the_reviewers_calls_are_labelled_with_the_workflow_and_step_of_their_target(evaluate):
+    _, _, root = evaluate(_review_oracle(_load_reviewer()), agent="adversarial_reviewer")
+    logs = (root / ".runs").glob("*/audit.jsonl")
+    lines = [json.loads(line) for log in logs for line in log.read_text().splitlines()]
+    labels = {(line["agent"], line["workflow"], line["step"]) for line in lines if line["event"] == "llm_call"}
+    assert labels == {
+        ("adversarial_reviewer", "security_examiner", "secrets"),
+        ("adversarial_reviewer", "security_examiner", "insecure_config"),
+        ("adversarial_reviewer", "final_review_writer", None),
+    }
+
+
+def test_one_missed_defect_in_one_case_still_meets_the_catch_threshold(evaluate):
+    eval_set = _load_reviewer()
+    r3 = next(case for case in eval_set.cases if case["id"] == "R3")
+    kept = {"R3": [_defect_challenge(r3, r3["defects"][0])]}
+    code, _, root = evaluate(_review_oracle(eval_set, challenges=kept), agent="adversarial_reviewer")
+    assert _review_scores(root)["R3"]["defect_catch_rate"] == 0.5
+    assert (code, _review_summary(root)["defect_catch_rate"]) == (0, True)
+
+
+def test_missing_every_defect_of_a_case_fails_the_catch_threshold(evaluate):
+    code, _, root = evaluate(_review_oracle(_load_reviewer(), challenges={"R3": []}), agent="adversarial_reviewer")
+    assert (code, _review_summary(root)["defect_catch_rate"]) == (1, False)
+
+
+def test_a_challenge_to_a_correct_output_fails_the_false_challenge_threshold(evaluate):
+    minor = {"R2": [_challenge("SEC-1", "minor", (("settings.py", 4),))]}
+    code, _, root = evaluate(_review_oracle(_load_reviewer(), challenges=minor), agent="adversarial_reviewer")
+    assert _review_scores(root)["R2"]["false_challenge_rate"] == 1.0
+    assert (code, _review_summary(root)["false_challenge_rate"]) == (1, False)
+
+
+def test_a_review_that_calls_a_blocking_defect_a_challenge_fails_calibration(evaluate):
+    eval_set = _load_reviewer()
+    r1 = next(case for case in eval_set.cases if case["id"] == "R1")
+    softened = {"R1": [{**_defect_challenge(r1, defect), "severity": "major"} for defect in r1["defects"]]}
+    code, _, root = evaluate(_review_oracle(eval_set, challenges=softened), agent="adversarial_reviewer")
+    assert _review_scores(root)["R1"]["critical_calibration"] == 0.0
+    assert (code, _review_summary(root)["critical_calibration"]) == (1, False)
+
+
+def test_a_reviewer_case_run_that_ends_in_a_dispatch_error_scores_each_criterion_at_its_worst(evaluate):
+    code, client, root = evaluate(_review_oracle(_load_reviewer(), broken={"R2"}), agent="adversarial_reviewer")
+    assert (code, client.script) == (1, [])
+    entry = next(item for item in _results(root, "adversarial_reviewer")["cases"] if item["case_id"] == "R2")
+    assert entry["error"] == "SCHEMA_INVALID"
+    assert entry["scores"] == {"false_challenge_rate": 1.0, "evidence_verified": 0.0}
+
+
+def test_reviewer_results_hold_scores_and_ids_but_none_of_the_text_the_reviewer_wrote(evaluate):
+    _, _, root = evaluate(_review_oracle(_load_reviewer()), agent="adversarial_reviewer")
+    text = (root / "results" / "adversarial_reviewer.json").read_text(encoding="utf-8")
+    assert MARKER not in text and "Checked." not in text
+    assert "judge" not in json.loads(text)
+
+
+def _writer_requests(client):
+    return [request for request in client.requests if request["system"].startswith("You are the final review writer")]
+
+
+def test_each_writer_request_is_the_real_agents_request_with_the_case_as_a_fresh_task(evaluate):
+    eval_set = _load_writer()
+    code, client, _ = evaluate(_write_oracle(eval_set), agent="final_review_writer")
+    assert code == 0
+    schema = json.loads((config.ROOT / WRITER["output_schema"]).read_text(encoding="utf-8"))
+    requests = _writer_requests(client)
+    assert len(requests) == 5
+    first = requests[0]
+    assert first["model"] == WRITER["model"] and "tools" not in first
+    assert first["system"] == (config.ROOT / WRITER["prompt"]).read_text(encoding="utf-8").strip()
+    assert first["output_config"] == {"effort": WRITER["effort"], "format": {"type": "json_schema", "schema": schema}}
+    case = eval_set.cases[0]
+    assert len(first["messages"]) == 1
+    assert json.loads(first["messages"][0]["content"]) == {
+        "disposition": case["disposition"],
+        "examinations": case["examinations"],
+        "reviews": case["reviews"],
+        "challenges": case["challenges"],
+    }
+
+
+def test_the_tone_judge_gets_only_the_draft_and_answers_through_the_gateways_structured_output(evaluate):
+    eval_set = _load_writer()
+    code, client, _ = evaluate(_write_oracle(eval_set), agent="final_review_writer")
+    assert code == 0
+    judge = client.requests[1]
+    assert judge["model"] == SONNET
+    assert judge["system"] == TONE_PROMPT.read_text(encoding="utf-8").strip()
+    assert judge["output_config"] == {
+        "effort": "medium",
+        "format": {"type": "json_schema", "schema": run.JUDGE_SCHEMA},
+    }
+    assert "tools" not in judge
+    assert judge["betas"] == [config.FALLBACK_BETA] and judge["fallbacks"] == config.FALLBACKS
+    assert judge["messages"] == [{"role": "user", "content": json.dumps(_faithful_draft(eval_set.cases[0]), indent=2)}]
+
+
+def test_the_tone_score_is_the_judges_score_and_a_run_mean_covers_every_case(evaluate):
+    eval_set = _load_writer()
+    judged = {"W1": _judged(5), "W2": _judged(5), "W3": _judged(4), "W4": _judged(4), "W5": _judged(3)}
+    code, _, root = evaluate(_write_oracle(eval_set, judged=judged), agent="final_review_writer")
+    results = _results(root, "final_review_writer")
+    assert {entry["case_id"]: entry["scores"]["tone_score"] for entry in results["cases"]} == {
+        "W1": 5.0, "W2": 5.0, "W3": 4.0, "W4": 4.0, "W5": 3.0,
+    }
+    tone = next(item for item in results["summary"] if item["criterion"] == "tone_score")
+    assert (tone["per_run_mean"], tone["passed_all_runs"], code) == ([4.2], True, 0)
+
+
+def test_a_judge_that_rates_every_draft_below_the_threshold_fails_the_run(evaluate):
+    code, _, root = evaluate(_write_oracle(_load_writer(), tone=3), agent="final_review_writer")
+    summary = {item["criterion"]: item["passed_all_runs"] for item in _results(root, "final_review_writer")["summary"]}
+    assert code == 1
+    assert summary == {"no_new_findings": True, "high_severity_coverage": True, "structure_valid_first_try": True,
+                       "tone_score": False}
+
+
+def test_writer_results_pin_the_judge_model_effort_and_prompt_hash(evaluate):
+    _, _, root = evaluate(_write_oracle(_load_writer()), agent="final_review_writer")
+    results = _results(root, "final_review_writer")
+    assert results["judge"] == {
+        "model": SONNET,
+        "effort": "medium",
+        "prompt_sha256": hashlib.sha256(TONE_PROMPT.read_bytes()).hexdigest(),
+    }
+    assert list(results).index("judge") == list(results).index("skills_sha256") + 1
+    assert (results["model"], results["effort"]) == (SONNET, "low")
+
+
+def test_the_judge_prompt_is_hashed_before_the_first_call(fake_anthropic, monkeypatch, tmp_path):
+    prompt = tmp_path / "tone.md"
+    prompt.write_text("original judge prompt")
+    monkeypatch.setitem(run.JUDGES, "final_review_writer", {**run.JUDGES["final_review_writer"], "prompt": str(prompt)})
+    eval_set = _load_writer()
+
+    class Editing(fake_anthropic):
+        def _create(self, **kwargs):
+            prompt.write_text("edited judge prompt")
+            return super()._create(**kwargs)
+
+    results = run.run_eval_set(Editing(_write_oracle(eval_set)), eval_set, runs=1, runs_dir=tmp_path / "runs")
+    assert results["judge"]["prompt_sha256"] == hashlib.sha256(b"original judge prompt").hexdigest()
+
+
+def test_the_judges_tokens_and_cost_count_in_the_case_run_that_asked_for_them(evaluate):
+    _, _, root = evaluate(_write_oracle(_load_writer()), agent="final_review_writer")
+    entry = _results(root, "final_review_writer")["cases"][0]
+    assert (entry["input_tokens"], entry["output_tokens"]) == (200, 40)
+    logs = (root / ".runs").glob("*/audit.jsonl")
+    lines = [json.loads(line) for log in logs for line in log.read_text().splitlines()]
+    assert {(line["agent"], line["workflow"], line["step"]) for line in lines if line["event"] == "llm_call"} == {
+        ("final_review_writer", "final_review_writer", None),
+        ("tone_judge", "final_review_writer", None),
+    }
+
+
+JUDGE_FAILURES = {
+    "REFUSAL": FAILURES["REFUSAL"],
+    "MAX_TOKENS": FAILURES["MAX_TOKENS"],
+    "API_ERROR": FAILURES["API_ERROR"],
+    "SCHEMA_INVALID": FAILURES["SCHEMA_INVALID"],
+}
+
+
+@pytest.mark.parametrize("error_code", JUDGE_FAILURES)
+def test_a_failed_judge_call_ends_the_case_run_with_its_code_and_the_harness_goes_on(evaluate, error_code):
+    judged = {"W2": JUDGE_FAILURES[error_code]()[0]}
+    code, client, root = evaluate(_write_oracle(_load_writer(), judged=judged), agent="final_review_writer")
+    assert (code, client.script) == (1, [])
+    entries = {entry["case_id"]: entry for entry in _results(root, "final_review_writer")["cases"]}
+    assert entries["W2"]["error"] == error_code
+    assert entries["W2"]["scores"] == dict.fromkeys(WRITE_CRITERIA_BY_CASE["W2"], 0.0)
+    assert all(entry["error"] is None for case, entry in entries.items() if case != "W2")
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {"rationale": "r", "score": 0},
+        {"rationale": "r", "score": 6},
+        {"rationale": "r", "score": "5"},
+        {"rationale": "r", "score": 4.5},
+        {"rationale": "r"},
+        {"score": 4},
+        {"rationale": "r", "score": 4, "extra": 1},
+        [4],
+    ],
+    ids=["zero", "six", "text", "fractional", "no-score", "no-rationale", "extra-key", "not-an-object"],
+)
+def test_a_judge_answer_outside_its_schema_is_refused_as_schema_invalid(evaluate, answer):
+    judged = {"W1": _answer(answer)}
+    _, _, root = evaluate(_write_oracle(_load_writer(), judged=judged), agent="final_review_writer")
+    entry = _results(root, "final_review_writer")["cases"][0]
+    assert entry["error"] == "SCHEMA_INVALID"
+    assert entry["scores"] == dict.fromkeys(WRITE_CRITERIA_BY_CASE["W1"], 0.0)
+
+
+def test_a_refused_draft_is_not_sent_to_the_judge_and_scores_its_worst(evaluate):
+    eval_set = _load_writer()
+    case = eval_set.cases[1]
+    cut = _faithful_draft(case)
+    cut["sections"].pop()
+    code, client, root = evaluate(
+        _write_oracle(eval_set, drafts={"W2": cut}, unjudged={"W2"}), agent="final_review_writer"
+    )
+    assert (code, client.script) == (1, [])
+    assert len(client.requests) == 9
+    entry = _results(root, "final_review_writer")["cases"][1]
+    assert (entry["error"], entry["scores"]["structure_valid_first_try"]) == ("SCHEMA_INVALID", 0.0)
+
+
+def test_a_draft_that_cites_an_id_its_input_lacks_scores_its_worst_through_the_guardrail(evaluate):
+    eval_set = _load_writer()
+    bad = _faithful_draft(eval_set.cases[0])
+    bad["sections"][0]["prose"] = "Fix it [SEC-77]."
+    _, _, root = evaluate(_write_oracle(eval_set, drafts={"W1": bad}, unjudged={"W1"}), agent="final_review_writer")
+    entry = _results(root, "final_review_writer")["cases"][0]
+    assert (entry["error"], entry["scores"]["no_new_findings"]) == ("EVIDENCE_INVALID", 0.0)
+
+
+def test_a_draft_that_names_a_location_its_input_lacks_fails_no_new_findings(evaluate):
+    eval_set = _load_writer()
+    added = _faithful_draft(eval_set.cases[0])
+    added["sections"][0]["prose"] += " The build script in deploy.sh:3 also needs a review."
+    code, _, root = evaluate(_write_oracle(eval_set, drafts={"W1": added}), agent="final_review_writer")
+    assert _results(root, "final_review_writer")["cases"][0]["scores"]["no_new_findings"] == 0.0
+    assert code == 1
+
+
+def test_a_draft_that_leaves_out_serious_findings_fails_coverage(evaluate):
+    eval_set = _load_writer()
+    w4 = next(case for case in eval_set.cases if case["id"] == "W4")
+    quiet = _faithful_draft(w4)
+    for section in quiet["sections"]:
+        section["prose"] = "Nothing needs attention."
+    code, _, root = evaluate(_write_oracle(eval_set, drafts={"W4": quiet}), agent="final_review_writer")
+    scores = {entry["case_id"]: entry["scores"] for entry in _results(root, "final_review_writer")["cases"]}
+    assert scores["W4"]["high_severity_coverage"] == 0.0
+    assert code == 1
+
+
+def test_sections_out_of_the_dispositions_order_fail_structure(evaluate):
+    eval_set = _load_writer()
+    swapped = _faithful_draft(eval_set.cases[0])
+    swapped["sections"].reverse()
+    code, _, root = evaluate(_write_oracle(eval_set, drafts={"W1": swapped}), agent="final_review_writer")
+    assert _results(root, "final_review_writer")["cases"][0]["scores"]["structure_valid_first_try"] == 0.0
+    assert code == 1
+
+
+def test_a_writer_that_explains_every_finding_and_a_judge_that_approves_meet_every_threshold(evaluate):
+    code, client, root = evaluate(_write_oracle(_load_writer(), runs=3), runs=3, agent="final_review_writer")
+    assert (code, client.script) == (0, [])
+    summary = _results(root, "final_review_writer")["summary"]
+    assert all(item["passed_all_runs"] for item in summary) and len(summary) == 4
+
+
+def test_writer_results_hold_scores_and_ids_but_none_of_the_text_the_writer_or_the_judge_wrote(evaluate):
+    _, _, root = evaluate(_write_oracle(_load_writer()), agent="final_review_writer")
+    text = (root / "results" / "final_review_writer.json").read_text(encoding="utf-8")
+    assert "The repository needs attention." not in text and "Polite and direct." not in text
+
+
+def _executor_log(tmp_path):
+    return audit.AuditLog(audit.new_correlation_id(NOW), runs_dir=tmp_path, clock=lambda: NOW)
+
+
+def test_the_writer_executor_keeps_the_accepted_draft_when_the_judge_fails(fake_anthropic, tmp_path):
+    case = _load_writer().cases[0]
+    client = fake_anthropic([_answer(_faithful_draft(case)), _not_json()])
+    outputs, error = run.AGENTS["final_review_writer"](client, _executor_log(tmp_path), WRITER, case)
+    assert (error, outputs) == ("SCHEMA_INVALID", {"draft": _faithful_draft(case)})
+
+
+def test_the_writer_executor_returns_no_outputs_when_the_draft_is_refused(fake_anthropic, tmp_path):
+    case = _load_writer().cases[0]
+    client = fake_anthropic([_not_json()])
+    outputs, error = run.AGENTS["final_review_writer"](client, _executor_log(tmp_path), WRITER, case)
+    assert (error, outputs) == ("SCHEMA_INVALID", {})
+
+
+def test_the_reviewer_executor_returns_no_outputs_when_the_review_is_refused(fake_anthropic, tmp_path):
+    case = _load_reviewer().cases[1]
+    client = fake_anthropic([_not_json()])
+    outputs, error = run.AGENTS["adversarial_reviewer"](client, _executor_log(tmp_path), REVIEWER, case)
+    assert (error, outputs) == ("SCHEMA_INVALID", {})
+
+
+def test_a_read_file_call_without_a_usable_path_is_refused_by_the_tool_and_leaves_no_trace(evaluate):
+    broken = [
+        _message([{"type": "tool_use", "id": "toolu_9", "name": "read_file", "input": {"start_line": 1}}], "tool_use"),
+        _message([{"type": "tool_use", "id": "toolu_9", "name": "read_file", "input": {"path": 7}}], "tool_use"),
+    ]
+    script = [*broken, *_review_oracle(_load_reviewer())]
+    code, client, _ = evaluate(script, agent="adversarial_reviewer")
+    assert (code, client.script) == (0, [])
+    assert [request["messages"][-1]["content"][0]["is_error"] for request in client.requests[1:3]] == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("defect", "raised", "caught"),
+    [
+        ("critical", "critical", 1.0),
+        ("critical", "major", 0.0),
+        ("critical", "minor", 0.0),
+        ("major", "critical", 1.0),
+        ("major", "major", 1.0),
+        ("major", "minor", 0.0),
+        ("minor", "minor", 1.0),
+        ("minor", "critical", 1.0),
+    ],
+)
+def test_a_challenge_catches_a_defect_only_when_it_is_at_least_as_serious_as_the_defect(defect, raised, caught):
+    by_finding = {"defects": [{"finding_id": "SEC-1", "severity": defect}]}
+    assert scoring.defect_catch_rate(by_finding, _reviewed(_challenge("SEC-1", raised))) == caught
+    by_place = {"defects": [{"file": "Dockerfile", "line": 6, "severity": defect}]}
+    assert scoring.defect_catch_rate(by_place, _reviewed(_challenge("", raised, (("Dockerfile", 6),)))) == caught
+
+
+def test_a_critical_challenge_to_a_real_finding_does_not_make_up_for_downgraded_defects():
+    defects = [{"finding_id": "SEC-1", "severity": "critical"}, {"finding_id": "SEC-2", "severity": "critical"}]
+    case = {"defects": defects}
+    review = _reviewed(_challenge("SEC-1", "minor"), _challenge("SEC-2", "minor"), _challenge("SEC-3", "critical"))
+    assert scoring.defect_catch_rate(case, review) == 0.0
+
+
+SITES = {
+    "SEC": [(1, "critical", "config.py", 4), (2, "high", ".env", 2)],
+    "CFG": [(1, "medium", "src/app.py", 12)],
+    "HYG": [(1, "low", "Dockerfile", 6)],
+}
+
+
+def _sited():
+    case = _wcase(SITES)
+    case["challenges"] = [{"id": "RV-6-C1", "evidence_checked": [{"file": "db.py", "line": 10}]}]
+    return case
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A new issue sits in config.py at line 99.",
+        "A new issue sits in config.py on line 99.",
+        "A new issue sits near config.py line 99.",
+        "A new issue sits in config.py, line 99, too.",
+        "A new issue sits in config.py (at line 99).",
+        "Dockerfile line 9 runs as root.",
+        "Dockerfile:9 runs as root.",
+        "The Dockerfile at line 9 runs as root.",
+        "Line 9 of the Dockerfile runs as root.",
+        "The .env line 9 holds a token.",
+        "The .env:9 holds a token.",
+        "**config.py**:99 holds a token.",
+        "See `config.py`:99 for the token.",
+        "See config.py#L99 for the token.",
+        "Lines 98-99 of config.py hold a token.",
+        "config.py lines 98 to 99 hold a token.",
+        "In deploy/ci.yml, line 14 pipes a script into a shell.",
+        "The script in .github/workflows/ci.yml:14 is unsafe.",
+        "A new issue SEC-9 needs a fix.",
+        "A new issue [SEC-9] needs a fix.",
+        "A new issue SEC-10 needs a fix.",
+        "See review RV-9 for details.",
+        "See challenge RV-6-C9 for details.",
+        "See examination EX-SEC-v9 for details.",
+        "See draft DR-v2 for details.",
+        "A new issue HYG-4 needs a fix.",
+        "A new issue VULN-1 needs a fix.",
+        "The setting is in p.py:12.",
+        "In config.py: line 99 is bad.",
+        "See config.py near line 99.",
+        "See config.py around line 99.",
+        "See config.py about line 99.",
+        "See config.py - line 99.",
+        "See config.py \u2014 line 99.",
+        "See config.py \u2013 line 99.",
+        "config.py lines 4 and 99 are bad.",
+        "config.py lines 4, 99 are bad.",
+        "config.py lines 4 & 99 are bad.",
+        "config.py:4,99 is bad.",
+        "config.py line 4 and line 99 are bad.",
+        "config.py#L4-L99 is bad.",
+        "config.py lines 1-12 are bad.",
+        "config.py lines 4 to 99 are bad.",
+        "config.py lines 4, or 99 are bad.",
+        "config.py line 4, .env line 99 are bad.",
+        "config.py line 99, .env line 2 are bad.",
+        "Line 99 of `config.py`, line 2 of `.env` are bad.",
+        "Line 4 of config.py, line 99 of .env are bad.",
+        "Line 4, config.py; line 99, .env are bad.",
+        "The files .env.production:99, config/.env.staging line 99, go.mod:99 and app.log:12 are bad.",
+        "config.py lines 4\u201499 are bad.",
+        "config.py lines 4\u201399 are bad.",
+        "Lines 98\u201499 of config.py are bad.",
+        "config.py:L99 is bad.",
+        "config.py L99 is bad.",
+        "config.py ln 99 is bad.",
+        "config.py line number 99 is bad.",
+        "config.py\nline 99 is bad.",
+        "Line 99 of the file config.py is bad.",
+        "Lines 4 and 99 of config.py are bad.",
+        "Line 99 (config.py) is bad.",
+        "Line 99, config.py, is bad.",
+        "The key in id_rsa line 99 is bad.",
+        "The file .npmrc:99 is bad.",
+        "The file Dockerfile.dev line 99 is bad.",
+        "The file app.rs:99 is bad.",
+        "The file .gitignore line 99 is bad.",
+    ],
+)
+def test_prose_that_adds_a_location_or_an_id_the_input_lacks_scores_zero(text):
+    case = _sited()
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": text}))) == 0.0
+    assert scoring.no_new_findings(case, _written(_draft(summary=text))) == 0.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The key sits in config.py at line 4.",
+        "The key sits in config.py on line 4.",
+        "The Dockerfile at line 6 runs as root.",
+        "Line 6 of the Dockerfile runs as root.",
+        "The .env:2 holds a token and the .env line 2 should go.",
+        "**config.py**:4 holds a key and config.py#L4 links to it.",
+        "The setting is in app.py line 12 (src/app.py:12).",
+        "The key is in config.py lines 3-5.",
+        "The key is in config.py lines 3 to 5.",
+        "Lines 3 to 5 of config.py hold a key.",
+        "The reviewer also read db.py:10.",
+        "The database host db.internal.example:5432 is reachable and example.org:443 too.",
+        "Calling requests.get line 3 and Node.js version 3.2.1: 5 items at 10:30 are fine.",
+        "CWE-798 and CVE-2018-18074 describe it, and SEC-1 and [HYG-1] are findings.",
+        "Version 3.2.1.beta:4 is not a file.",
+        "EX-SEC-v1 and RV-1 are in the input.",
+        "The examiner answered RV-0-C1 and rejected it.",
+        "dockerfile line 6 and DOCKERFILE:6 are the same file.",
+        "Config.py:4 and CONFIG.PY line 4 name it too.",
+        "config.py lines 4 and 4, and lines 4, 4 of config.py.",
+        "config.py lines 1-10 and 4-4 and 4 to 4.",
+        "config.py lines 1-11 are the block.",
+        "config.py: 3 findings and a note: 5 items.",
+        "config.py line 4, .env line 2 are the two findings.",
+        "config.py at line 4, .env at line 2 are the two findings.",
+        "`config.py` line 4, `.env` line 2 are the two findings.",
+        "Line 4 of config.py, line 2 of .env are the two findings.",
+        "Line 4 of config.py; line 2 of .env are the two findings.",
+        "Line 4 of config.py\nline 2 of .env are the two findings.",
+        "Line 4 of config.py - line 2 of .env are the two findings.",
+        "Line 4, config.py; line 2, .env are the two findings.",
+        "config.py:4, .env:2 are the two findings.",
+        "config.py (line 4), .env (line 2) are the two findings.",
+        "config.py line 4 and 2 other places hold secrets.",
+        "Line 4 of `config.py`, line 2 of `.env` are the two findings.",
+        "app.py line 12, 3 more settings are weak.",
+        "config.py lines 4 and 3 other issues, 2 files and 5 items.",
+    ],
+)
+def test_prose_that_names_only_what_the_input_holds_scores_one(text):
+    case = _sited()
+    case["reviews"] = {"RV-1": {"target_id": "EX-SEC-v1", "challenges": []}}
+    case["examinations"]["EX-SEC-v1"]["challenge_responses"] = [{"challenge_id": "RV-0-C1"}]
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": text}))) == 1.0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * 30000,
+        "a.b" * 10000,
+        "a." * 15000,
+        "/".join(["a"] * 10000),
+        "settings.py:" + "9" * 5000,
+        "line " + "9" * 5000 + " of config.py",
+        "config.py line " + "9" * 5000,
+        "SEC-" + "9" * 5000,
+        "[" * 5000,
+        "a.py line 1" + " and line 2" * 10000,
+        "lines 1, " * 10000,
+        "line 1 of a.py, " * 10000,
+        "a.py line 1, " * 10000,
+    ],
+    ids=["one-word", "dotted", "dots", "slashes", "colon-digits", "of-digits", "line-digits", "id-digits", "brackets",
+         "repeated-line-list", "repeated-lines", "repeated-of", "repeated-paths"],
+)
+def test_a_long_run_of_one_kind_of_character_is_scored_quickly_and_never_crashes(deadline, text):
+    with deadline(5):
+        score = scoring.no_new_findings(_sited(), _written(_draft({"SEC": text})))
+        coverage = scoring.high_severity_coverage(_sited(), _written(_draft({"SEC": text})))
+    assert score in (0.0, 1.0) and 0.0 <= coverage <= 1.0
+
+
+def _unredacted(value, where=""):
+    """Return where a string differs from its redacted form, skipping the references the runner keeps unmasked."""
+    kept = {"file", "finding_id", "workflow", "step", "target_id", "key"}
+    if isinstance(value, str):
+        return [where] if guardrails.redact(value) != value else []
+    if isinstance(value, dict):
+        return [
+            problem
+            for key, item in value.items()
+            if not (key in kept and isinstance(item, str))
+            for problem in _unredacted(item, f"{where}/{key}")
+        ]
+    if isinstance(value, list):
+        return [problem for number, item in enumerate(value) for problem in _unredacted(item, f"{where}/{number}")]
+    return []
+
+
+def _stored_parts():
+    parts = {}
+    for case in _load_reviewer().cases:
+        task = [case["input_context"]] if case["target_id"].startswith("DR-") else []
+        parts[case["id"]] = [case["target"], *task]
+    for case in _load_writer().cases:
+        parts[case["id"]] = [case["disposition"], case["examinations"], case["reviews"], case["challenges"]]
+    return parts
+
+
+def test_every_examination_review_and_draft_in_a_fixture_is_in_the_form_the_harness_stores():
+    problems = {name: [_unredacted(part) for part in parts] for name, parts in _stored_parts().items()}
+    assert {name: found for name, found in problems.items() if any(found)} == {}
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        {"evidence": 'SECRET_KEY = "k7Zp2VbN8qLx5RtY1wHs"'},
+        {"findings": [{"evidence": "DB_PASSWORD=Tq7!vR2mXc9Lw4Ns", "file": "a.py"}]},
+        {"sections": [{"prose": "The token ghp_" + "a1B2c3D4" * 5 + " is in the file."}]},
+    ],
+)
+def test_the_redaction_check_detects_a_planted_secret(part):
+    assert _unredacted(part)
+
+
+QUOTED = [
+    ("R1", ".env", 2, "REPORTING_API_TOKEN=rpt-"),
+    ("R2", ".env", 4, "DB_PASSWORD=Tq7!"),
+    ("R2", "settings.py", 4, "SECRET_KEY"),
+    ("R3", "app.py", 10, "debug=True"),
+    ("R3", "views.py", 8, "yaml.load(request.data"),
+    ("R3", "client.py", 11, "verify=False"),
+    *[(name, "settings.py", 4, "SECRET_KEY") for name in ("R4", "R5")],
+    *[(name, "app.py", 9, "Access-Control-Allow-Origin") for name in ("R4", "R5")],
+    *[(name, "requirements.txt", 2, "requests>=2") for name in ("R4", "R5")],
+    ("R4", "deploy/ci.yml", 14, "| sh"),
+    ("R4", "Dockerfile", 6, "USER root"),
+]
+ABSENT = [("R1", "config.py", 5, "AWS_SECRET_ACCESS_KEY"), ("R1", "db.py", 10, 'password="')]
+
+
+def _repo_line(case_id, file, line):
+    return sandbox.Workspace(REVIEW_DIR / "cases" / case_id / "repo").read_lines(file)[line - 1]
+
+
+@pytest.mark.parametrize(("case_id", "file", "line", "fragment"), QUOTED)
+def test_the_text_a_correct_finding_or_a_seeded_addition_rests_on_is_on_its_line(case_id, file, line, fragment):
+    assert fragment in _repo_line(case_id, file, line)
+
+
+@pytest.mark.parametrize(("case_id", "file", "line", "fragment"), ABSENT)
+def test_the_text_a_fabricated_finding_quotes_is_not_on_its_line_and_the_finding_cites_that_line(
+    case_id, file, line, fragment
+):
+    case = next(item for item in _load_reviewer().cases if item["id"] == case_id)
+    assert fragment not in _repo_line(case_id, file, line)
+    assert [item["id"] for item in case["target"]["findings"] if (item["file"], item["line"]) == (file, line)]
+
+
+def _severity_bullet(checklist, level):
+    return next(line for line in checklist.splitlines() if line.startswith(f"- {level}:"))
+
+
+def test_the_seeded_severities_of_the_examination_cases_follow_the_checklists():
+    cases = {case["id"]: case for case in _load_reviewer().cases}
+    config_list = runner.checklist_section(SECURITY, "insecure_config")
+    assert "debug mode on" in _severity_bullet(config_list, "high")
+    assert "unsafe YAML loader" in _severity_bullet(config_list, "critical")
+    assert "TLS verification off on calls that carry credentials" in _severity_bullet(config_list, "high")
+    assert {item["id"]: item["severity"] for item in cases["R3"]["target"]["findings"]} == {
+        "CFG-1": "medium",
+        "CFG-2": "high",
+        "CFG-3": "high",
+    }
+    secrets_list = runner.checklist_section(SECURITY, "secrets")
+    assert "password of a production database" in _severity_bullet(secrets_list, "critical")
+    assert "signing key" in _severity_bullet(secrets_list, "high")
+    assert {item["id"]: item["severity"] for item in cases["R2"]["target"]["findings"]} == {
+        "SEC-1": "critical",
+        "SEC-2": "high",
+    }
+    hygiene = runner.checklist_section(DEPENDENCY, "dependency_hygiene")
+    assert "Rate medium an unpinned runtime dependency with no lockfile" in hygiene
+
+
+def test_the_unpinned_dependencies_of_the_fixtures_are_rated_medium_as_the_checklist_says():
+    found = []
+    for task in _writer_tasks():
+        for examination in task["examinations"].values():
+            found += [finding["severity"] for finding in examination["findings"] if finding["category"] == "unpinned"]
+    assert found and set(found) == {"medium"}
+
+
+def test_the_report_cases_hold_the_added_findings_their_defects_name_and_the_faithful_draft_holds_none():
+    cases = {case["id"]: case for case in _load_reviewer().cases}
+    for name, expected in (("R5", 1.0), ("R4", 0.0)):
+        assert scoring.no_new_findings(cases[name]["input_context"], {"draft": cases[name]["target"]}) == expected
+    prose = " ".join(section["prose"] for section in cases["R4"]["target"]["sections"])
+    assert "deploy/ci.yml, line 14" in prose and "Dockerfile at line 6" in prose
+
+
+def test_the_overruled_challenge_case_also_gives_the_writer_a_challenge_to_its_previous_draft():
+    cases = {case["id"]: case for case in _load_writer().cases}
+    assert [name for name, case in cases.items() if case["challenges"]] == ["W5"]
+    challenge = cases["W5"]["challenges"][0]
+    answered = {item["id"] for review in cases["W5"]["reviews"].values() for item in review["challenges"]}
+    assert challenge["id"] not in answered
+    assert challenge["id"] in scoring.input_ids(cases["W5"])
+
+
+
+EXTENSIONS = (
+    "py js ts tsx jsx mjs cjs json yml yaml toml ini cfg conf env txt lock sh md tf xml html css java go rb php cs "
+    "gradle properties key pem crt sql rs c h cpp hpp kt swift scala j2 ps1 bat plist npmrc pypirc netrc gitignore "
+    "dockerignore mod log"
+).split()
+BARE_NAMES = (
+    "Dockerfile Containerfile Makefile Pipfile Jenkinsfile Procfile Gemfile Vagrantfile id_rsa id_ed25519 "
+    "Dockerfile.dev Dockerfile.prod .env .env.production .env.local config/.env.staging"
+).split()
+
+
+@pytest.mark.parametrize("name", [f"x.{extension}" for extension in EXTENSIONS] + BARE_NAMES)
+def test_a_file_with_a_listed_extension_or_a_listed_bare_name_is_a_location(name):
+    case = _wcase({"SEC": [(1, "high", "known.py", 1)]})
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": f"A new issue is in {name}:99."}))) == 0.0
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": f"A new issue is in {name} at line 99."}))) == 0.0
+
+
+@pytest.mark.parametrize("name", ["host.org", "host.example", "x.get", "x.beta", "x.1", "Dockerfiles", "xDockerfile"])
+def test_a_name_with_another_ending_is_no_location(name):
+    case = _wcase({"SEC": [(1, "high", "known.py", 1)]})
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": f"See {name}:99 and {name} line 99."}))) == 1.0
+
+
+def test_a_finding_given_with_a_dot_slash_path_is_named_by_the_plain_path():
+    case = _wcase({"SEC": [(1, "high", "./src/../config.py", 4)]})
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": "The key sits in config.py:4."}))) == 1.0
+
+
+@pytest.mark.parametrize(
+    ("text", "score"),
+    [
+        ("A new issue sits on line 99 in config.py.", 0.0),
+        ("A new issue sits on line 99 of config.pyc and line 98 of Dockerfiles.", 1.0),
+        ("The key sits in config.py lines 3\u20135.", 1.0),
+        ("Lines 98\u201399 of config.py hold a key.", 0.0),
+        ("A new issue is in config.py:" + "9" * 9 + ".", 0.0),
+        ("A new issue is in config.py:" + "9" * 10 + ".", 1.0),
+        ("A new issue is in config.py:4-" + "9" * 10 + ".", 1.0),
+    ],
+    ids=["in", "longer-names", "en-dash-range", "en-dash-range-outside", "nine-digits", "ten-digits", "ten-digit-end"],
+)
+def test_the_location_forms_of_the_prose_and_their_limits(text, score):
+    assert scoring.no_new_findings(_sited(), _written(_draft({"SEC": text}))) == score
+
+
+def test_a_finding_given_with_a_doubled_slash_is_named_by_its_plain_path():
+    case = _wcase({"SEC": [(1, "high", "./src//app.py", 12)]})
+    assert scoring.no_new_findings(case, _written(_draft({"SEC": "The setting is in src/app.py:12."}))) == 1.0
+
+
+def test_every_writer_request_carries_the_whole_input_of_its_case_challenges_included(evaluate):
+    eval_set = _load_writer()
+    code, client, _ = evaluate(_write_oracle(eval_set), agent="final_review_writer")
+    assert code == 0
+    requests = _writer_requests(client)
+    assert len(requests) == 5
+    for case, request in zip(eval_set.cases, requests):
+        assert json.loads(request["messages"][0]["content"]) == {
+            "disposition": case["disposition"],
+            "examinations": case["examinations"],
+            "reviews": case["reviews"],
+            "challenges": case["challenges"],
+        }
+    assert [json.loads(r["messages"][0]["content"])["challenges"] != [] for r in requests] == [
+        False, False, False, False, True,
+    ]
+
+
+def test_the_vulnerable_dependencies_of_the_writer_cases_have_the_severity_and_advisories_the_dependency_set_expects():
+    replay = json.loads((DEPENDENCY_DIR / "osv_replay.json").read_text(encoding="utf-8"))
+    expected = {
+        item["contains"]: (item["severity"], sorted(vuln["id"] for vuln in replay[item["package"]]["vulns"]))
+        for case in _load_dependency().cases
+        for item in case["expected"]
+        if "package" in item
+    }
+    found = []
+    for task in _writer_tasks():
+        for examination in task["examinations"].values():
+            for finding in examination["findings"]:
+                if finding["category"] == "vulnerable-dependency":
+                    found.append(finding["evidence"])
+                    assert (finding["severity"], sorted(finding["advisory_ids"])) == expected[finding["evidence"]]
+    assert len(found) >= 6
+
+
+def test_a_draft_that_names_a_defects_file_by_its_base_name_at_its_line_loads(tmp_path):
+    root = _copy_set(tmp_path, "adversarial_reviewer")
+    _edit_case(root, "adversarial_reviewer", "R4", lambda c: c["target"]["sections"][0].update(
+        prose=c["target"]["sections"][0]["prose"].replace("In deploy/ci.yml, line 14", "In ci.yml, line 15")))
+    assert [case["id"] for case in _load_reviewer(root).cases] == ["R1", "R2", "R3", "R4", "R5"]
+
+
+@pytest.mark.parametrize(("line", "loads"), [(3, False), (4, True), (8, True), (9, False)])
+def test_a_draft_names_a_defects_file_close_enough_when_its_line_is_within_the_tolerance(tmp_path, line, loads):
+    root = _copy_set(tmp_path, "adversarial_reviewer")
+
+    def move(case):
+        section = case["target"]["sections"][1]
+        section["prose"] = section["prose"].replace("The Dockerfile at line 6", f"The Dockerfile at line {line}")
+
+    _edit_case(root, "adversarial_reviewer", "R4", move)
+    if loads:
+        assert [case["id"] for case in _load_reviewer(root).cases] == ["R1", "R2", "R3", "R4", "R5"]
+    else:
+        with pytest.raises(ValueError, match="never names Dockerfile"):
+            _load_reviewer(root)
+
+
+def test_every_unpinned_dependency_of_a_writer_input_is_recorded_as_a_limitation_of_the_vulnerability_step():
+    checked = 0
+    for task in _writer_tasks():
+        examinations = task["examinations"].values()
+        stated = " ".join(
+            text for e in examinations if e["step"] == config.ADVISORY_STEP for text in e["limitations"]
+        )
+        for examination in examinations:
+            for finding in examination["findings"]:
+                if finding["category"] == "unpinned":
+                    checked += 1
+                    assert re.match(r"[A-Za-z0-9_.-]+", finding["evidence"])[0] in stated
+    assert checked >= 6
+
+
+def test_the_upgrade_a_vulnerability_finding_recommends_is_a_version_the_advisories_name_as_fixed():
+    replay = json.loads((DEPENDENCY_DIR / "osv_replay.json").read_text(encoding="utf-8"))
+    fixed = {
+        item["contains"]: {
+            event["fixed"]
+            for vuln in replay[item["package"]]["vulns"]
+            for affected in vuln.get("affected", [])
+            for span in affected.get("ranges", [])
+            for event in span.get("events", [])
+            if "fixed" in event
+        }
+        for case in _load_dependency().cases
+        for item in case["expected"]
+        if "package" in item
+    }
+    checked = 0
+    for task in _writer_tasks():
+        for examination in task["examinations"].values():
+            for finding in examination["findings"]:
+                if finding["category"] == "vulnerable-dependency":
+                    checked += 1
+                    version = re.search(r"to (\d+(?:\.\d+)+) or later", finding["recommendation"])
+                    assert version and version[1] in fixed[finding["evidence"]]
+    assert checked >= 6
+
+
+COUNT_WORDS = (
+    "more other further additional similar different separate places locations files settings findings issues lines "
+    "occurrences instances times items secrets keys"
+).split()
+
+
+@pytest.mark.parametrize("word", COUNT_WORDS)
+def test_a_number_that_a_counting_word_follows_is_a_count_and_no_line(word):
+    text = f"config.py line 4 and 2 {word} hold secrets."
+    assert scoring.no_new_findings(_sited(), _written(_draft({"SEC": text}))) == 1.0
+    assert scoring.no_new_findings(_sited(), _written(_draft({"SEC": text.replace("2 ", "99 ", 1)}))) == 1.0
+
+
+def test_a_draft_that_names_a_defects_file_in_a_range_as_wide_as_the_cap_allows_loads(tmp_path):
+    root = _copy_set(tmp_path, "adversarial_reviewer")
+    _edit_case(root, "adversarial_reviewer", "R4", lambda c: c["target"]["sections"][0].update(
+        prose=c["target"]["sections"][0]["prose"].replace("ci.yml, line 14", "ci.yml, lines 4-14")))
+    assert [case["id"] for case in _load_reviewer(root).cases] == ["R1", "R2", "R3", "R4", "R5"]

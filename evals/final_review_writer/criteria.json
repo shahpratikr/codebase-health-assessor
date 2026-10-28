@@ -1,0 +1,28 @@
+{
+  "criteria": [
+    {
+      "name": "no_new_findings",
+      "threshold": 1.0,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 when the draft names no location (a file with a line or lines) that no finding or reviewer evidence of its input holds, and no finding, examination, review, challenge or draft ID that its input lacks, otherwise 0. The guardrail refuses a bracketed ID the input lacks, which scores the run at its worst."
+    },
+    {
+      "name": "high_severity_coverage",
+      "threshold": 0.9,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share of the input's critical and high findings that the draft cites by ID in square brackets in the section of their own step."
+    },
+    {
+      "name": "structure_valid_first_try",
+      "threshold": 0.9,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 when the draft passes the guardrail on its only dispatch (one section per step, no heading, no unknown ID) and its sections follow the order of the disposition, otherwise 0."
+    },
+    {
+      "name": "tone_score",
+      "threshold": 4.0,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the tone judge's score of the draft, from 1 to 5 (evals/judges/tone.md): polite, encouraging and direct."
+    }
+  ]
+}

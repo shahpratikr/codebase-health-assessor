@@ -1,0 +1,129 @@
+{
+  "id": "W1",
+  "description": "No critical or high finding in any step: every section passes.",
+  "disposition": {
+    "steps": [
+      {
+        "workflow": "security_examiner",
+        "step": "secrets",
+        "examination_id": "EX-SEC-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "security_examiner",
+        "step": "insecure_config",
+        "examination_id": "EX-CFG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "known_vulnerabilities",
+        "examination_id": "EX-VULN-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "dependency_hygiene",
+        "examination_id": "EX-HYG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      }
+    ],
+    "summary": "Every step was examined and reviewed."
+  },
+  "examinations": {
+    "EX-SEC-v1": {
+      "workflow": "security_examiner",
+      "step": "secrets",
+      "summary": "Read the configuration files. No secret is written into the code.",
+      "findings": [],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-CFG-v1": {
+      "workflow": "security_examiner",
+      "step": "insecure_config",
+      "summary": "Read app.py. One setting is permissive.",
+      "findings": [
+        {
+          "id": "CFG-1",
+          "title": "Responses allow requests from any origin",
+          "severity": "medium",
+          "category": "cors",
+          "file": "app.py",
+          "line": 12,
+          "evidence": "response.headers[\"Access-Control-Allow-Origin\"] = \"*\"",
+          "recommendation": "List the origins that need access instead of allowing every one.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-VULN-v1": {
+      "workflow": "dependency_examiner",
+      "step": "known_vulnerabilities",
+      "summary": "Looked up the two pinned packages. OSV lists no advisory for either.",
+      "findings": [],
+      "limitations": [
+        "gunicorn has no exact version, so it could not be looked up."
+      ],
+      "challenge_responses": []
+    },
+    "EX-HYG-v1": {
+      "workflow": "dependency_examiner",
+      "step": "dependency_hygiene",
+      "summary": "Read requirements.txt. One entry is not pinned.",
+      "findings": [
+        {
+          "id": "HYG-1",
+          "title": "gunicorn is not pinned",
+          "severity": "medium",
+          "category": "unpinned",
+          "file": "requirements.txt",
+          "line": 3,
+          "evidence": "gunicorn",
+          "recommendation": "Pin an exact version and add a lockfile.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    }
+  },
+  "reviews": {
+    "RV-1": {
+      "target_id": "EX-SEC-v1",
+      "verdict": "pass",
+      "summary": "Read the configuration files and found nothing the examiner missed.",
+      "challenges": []
+    },
+    "RV-2": {
+      "target_id": "EX-CFG-v1",
+      "verdict": "pass",
+      "summary": "Opened app.py and confirmed the finding.",
+      "challenges": []
+    },
+    "RV-3": {
+      "target_id": "EX-VULN-v1",
+      "verdict": "pass",
+      "summary": "Confirmed the two pins.",
+      "challenges": []
+    },
+    "RV-4": {
+      "target_id": "EX-HYG-v1",
+      "verdict": "pass",
+      "summary": "Opened requirements.txt and confirmed the finding.",
+      "challenges": []
+    }
+  },
+  "challenges": [],
+  "criteria": [
+    "no_new_findings",
+    "structure_valid_first_try",
+    "tone_score"
+  ]
+}

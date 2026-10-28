@@ -1,0 +1,291 @@
+{
+  "id": "W4",
+  "description": "Fourteen findings across the four steps, eight of them critical or high.",
+  "disposition": {
+    "steps": [
+      {
+        "workflow": "security_examiner",
+        "step": "secrets",
+        "examination_id": "EX-SEC-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "security_examiner",
+        "step": "insecure_config",
+        "examination_id": "EX-CFG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "known_vulnerabilities",
+        "examination_id": "EX-VULN-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "dependency_hygiene",
+        "examination_id": "EX-HYG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      }
+    ],
+    "summary": "Every step was examined and reviewed."
+  },
+  "examinations": {
+    "EX-SEC-v1": {
+      "workflow": "security_examiner",
+      "step": "secrets",
+      "summary": "Read the configuration files and the tests. Three secrets are written into the code.",
+      "findings": [
+        {
+          "id": "SEC-1",
+          "title": "AWS access key written into config.py",
+          "severity": "critical",
+          "category": "aws-key",
+          "file": "config.py",
+          "line": 4,
+          "evidence": "AWS_ACCESS_KEY_ID = \"AKIA...\"",
+          "recommendation": "Revoke the key and read it from the environment.",
+          "advisory_ids": []
+        },
+        {
+          "id": "SEC-2",
+          "title": "Database password written into .env",
+          "severity": "high",
+          "category": "db-password",
+          "file": ".env",
+          "line": 2,
+          "evidence": "DB_PASSWORD=<redacted:Vb4\u2026>",
+          "recommendation": "Rotate the password and keep .env out of the repository.",
+          "advisory_ids": []
+        },
+        {
+          "id": "SEC-3",
+          "title": "Test credential written into a fixture",
+          "severity": "medium",
+          "category": "test-secret",
+          "file": "tests/conftest.py",
+          "line": 5,
+          "evidence": "API_TOKEN = \"<redacted:tst\u2026>\"",
+          "recommendation": "Move the credential to the environment of the test job.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-CFG-v1": {
+      "workflow": "security_examiner",
+      "step": "insecure_config",
+      "summary": "Read the application and the compose file. Four settings weaken it.",
+      "findings": [
+        {
+          "id": "CFG-1",
+          "title": "Request body is loaded with the full YAML loader",
+          "severity": "critical",
+          "category": "unsafe-deserialization",
+          "file": "views.py",
+          "line": 8,
+          "evidence": "yaml.load(request.data, Loader=yaml.Loader)",
+          "recommendation": "Use yaml.safe_load.",
+          "advisory_ids": []
+        },
+        {
+          "id": "CFG-2",
+          "title": "Flask debug mode is on",
+          "severity": "high",
+          "category": "debug-mode",
+          "file": "app.py",
+          "line": 23,
+          "evidence": "app.run(debug=True)",
+          "recommendation": "Turn debug off in the deployed configuration.",
+          "advisory_ids": []
+        },
+        {
+          "id": "CFG-3",
+          "title": "Responses allow requests from any origin",
+          "severity": "medium",
+          "category": "cors",
+          "file": "app.py",
+          "line": 8,
+          "evidence": "origins=\"*\"",
+          "recommendation": "List the origins that need access.",
+          "advisory_ids": []
+        },
+        {
+          "id": "CFG-4",
+          "title": "The development database port is published",
+          "severity": "low",
+          "category": "exposed-port",
+          "file": "docker-compose.dev.yml",
+          "line": 6,
+          "evidence": "\"5432:5432\"",
+          "recommendation": "Bind the port to localhost.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-VULN-v1": {
+      "workflow": "dependency_examiner",
+      "step": "known_vulnerabilities",
+      "summary": "Looked up the pinned packages. Four have advisories.",
+      "findings": [
+        {
+          "id": "VULN-1",
+          "title": "pyyaml 5.3 has published advisories",
+          "severity": "critical",
+          "category": "vulnerable-dependency",
+          "file": "requirements.txt",
+          "line": 2,
+          "evidence": "pyyaml==5.3",
+          "recommendation": "Upgrade pyyaml to 5.4 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-6757-jp84-gxfx",
+            "GHSA-8q59-q68h-6hv4",
+            "PYSEC-2020-96",
+            "PYSEC-2021-142"
+          ]
+        },
+        {
+          "id": "VULN-2",
+          "title": "requests 2.19.0 has published advisories",
+          "severity": "high",
+          "category": "vulnerable-dependency",
+          "file": "requirements.txt",
+          "line": 3,
+          "evidence": "requests==2.19.0",
+          "recommendation": "Upgrade requests to 2.33.0 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-9hjg-9r4m-mvj7",
+            "GHSA-9wx4-h78v-vm56",
+            "GHSA-gc5v-m9x4-r6x2",
+            "GHSA-j8r2-6x86-q33q",
+            "GHSA-x84v-xcm2-53pg",
+            "PYSEC-2018-28",
+            "PYSEC-2023-74",
+            "PYSEC-2026-1872",
+            "PYSEC-2026-1873",
+            "PYSEC-2026-2275"
+          ]
+        },
+        {
+          "id": "VULN-3",
+          "title": "lodash 4.17.15 has published advisories",
+          "severity": "high",
+          "category": "vulnerable-dependency",
+          "file": "package.json",
+          "line": 6,
+          "evidence": "\"lodash\": \"4.17.15\"",
+          "recommendation": "Upgrade lodash to 4.18.0 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-29mw-wpgm-hmr9",
+            "GHSA-35jh-r3h4-6jhm",
+            "GHSA-f23m-r3pf-42rh",
+            "GHSA-p6mc-m468-83gw",
+            "GHSA-r5fr-rjxr-66jc",
+            "GHSA-xxjr-mmjv-4gpg"
+          ]
+        },
+        {
+          "id": "VULN-4",
+          "title": "markdown 3.0 has published advisories",
+          "severity": "high",
+          "category": "vulnerable-dependency",
+          "file": "requirements.txt",
+          "line": 5,
+          "evidence": "markdown==3.0",
+          "recommendation": "Upgrade markdown to 3.8.1 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-5wmx-573v-2qwq",
+            "PYSEC-2026-89"
+          ]
+        }
+      ],
+      "limitations": [
+        "gunicorn has no exact version, so it could not be looked up.",
+        "The git dependency has no version, so it could not be looked up."
+      ],
+      "challenge_responses": []
+    },
+    "EX-HYG-v1": {
+      "workflow": "dependency_examiner",
+      "step": "dependency_hygiene",
+      "summary": "Read the manifests. Three entries need attention.",
+      "findings": [
+        {
+          "id": "HYG-1",
+          "title": "A dependency is installed from a git branch",
+          "severity": "medium",
+          "category": "git-dependency",
+          "file": "requirements.txt",
+          "line": 9,
+          "evidence": "git+https://git.example.org/team/tool.git@main",
+          "recommendation": "Pin a release or a commit.",
+          "advisory_ids": []
+        },
+        {
+          "id": "HYG-2",
+          "title": "gunicorn is not pinned",
+          "severity": "medium",
+          "category": "unpinned",
+          "file": "requirements.txt",
+          "line": 10,
+          "evidence": "gunicorn",
+          "recommendation": "Pin an exact version.",
+          "advisory_ids": []
+        },
+        {
+          "id": "HYG-3",
+          "title": "pytest is installed with the runtime dependencies",
+          "severity": "low",
+          "category": "misplaced-dependency",
+          "file": "requirements.txt",
+          "line": 11,
+          "evidence": "pytest==8.2.0",
+          "recommendation": "Move it to the development requirements.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    }
+  },
+  "reviews": {
+    "RV-1": {
+      "target_id": "EX-SEC-v1",
+      "verdict": "pass",
+      "summary": "Opened the three files and confirmed the findings.",
+      "challenges": []
+    },
+    "RV-2": {
+      "target_id": "EX-CFG-v1",
+      "verdict": "pass",
+      "summary": "Opened the four files and confirmed the findings.",
+      "challenges": []
+    },
+    "RV-3": {
+      "target_id": "EX-VULN-v1",
+      "verdict": "pass",
+      "summary": "Confirmed the pins and their advisories.",
+      "challenges": []
+    },
+    "RV-4": {
+      "target_id": "EX-HYG-v1",
+      "verdict": "pass",
+      "summary": "Opened the manifests and confirmed the findings.",
+      "challenges": []
+    }
+  },
+  "challenges": [],
+  "criteria": [
+    "no_new_findings",
+    "high_severity_coverage",
+    "structure_valid_first_try",
+    "tone_score"
+  ]
+}

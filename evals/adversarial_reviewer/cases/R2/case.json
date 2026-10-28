@@ -1,0 +1,49 @@
+{
+  "id": "R2",
+  "description": "A correct examination: each finding quotes its line, and each severity follows the checklist. The reviewer should pass it.",
+  "target_id": "EX-SEC-v1",
+  "target": {
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "summary": "Read .env, settings.py and app.py. Two credentials are written into the repository.",
+    "findings": [
+      {
+        "id": "SEC-1",
+        "title": "Production database password written into .env",
+        "severity": "critical",
+        "category": "db-password",
+        "file": ".env",
+        "line": 4,
+        "evidence": "DB_PASSWORD=<redacted:Tq7\u2026>",
+        "recommendation": "Rotate the password, keep .env out of the repository and read it from a secret store.",
+        "advisory_ids": []
+      },
+      {
+        "id": "SEC-2",
+        "title": "Signing key written into settings.py",
+        "severity": "high",
+        "category": "signing-key",
+        "file": "settings.py",
+        "line": 4,
+        "evidence": "SECRET_KEY = \"<redacted:k7Z\u2026>\"",
+        "recommendation": "Generate a new key, read it from the environment and treat sessions signed with the old key as untrusted.",
+        "advisory_ids": []
+      }
+    ],
+    "limitations": [],
+    "challenge_responses": []
+  },
+  "input_context": {
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "workspace": "repo",
+    "checklist": "Look for credentials written into the working tree. Check these first, in this order:\n- environment and configuration files: `.env`, `.env.*`, `*.ini`, `*.cfg`, `*.conf`, `*.yaml`, `*.yml`, `*.toml`, `*.json`, `settings.py`, `config.py`\n- private keys and certificates in text form: `*.pem`, `*.key`, `id_rsa`, and any file holding `-----BEGIN ... PRIVATE KEY-----`\n- source files that build clients: database URLs, SDK clients, HTTP calls that set headers\n- build and deployment files: `Dockerfile`, `docker-compose*.yml`, `.github/workflows/*`, `*.tf`\n\nWhat counts:\n- cloud keys: AWS access key IDs (`AKIA...`, `ASIA...`) and their 40-character secret keys, GCP service-account JSON, Azure connection strings\n- private key blocks\n- a password, secret, token or API key assigned a literal value: `password = \"...\"`, `API_KEY: ...`, `\"token\": \"...\"`\n- service tokens with a known prefix: `sk-`, `ghp_`, `xoxb-`, `AIza`\n- credentials inside a URL: `postgres://user:password@host`\n- a hard-coded framework signing key: Flask or Django `SECRET_KEY = \"...\"`\n\nWhat does not count, so do not report it:\n- a value read from the environment or a secret store: `os.environ[\"X\"]`, `os.getenv(\"X\")`, `process.env.X`, `${X}`\n- an obvious placeholder: `changeme`, `<your-key>`, `xxx`, `TODO`, an empty string\n- a hash, a public key or a commit SHA\n\nSeverity:\n- critical: a cloud or payment credential, a private key, or the password of a production database: whoever reads the repository can act as the client in production\n- high: any other live-looking credential, token, API key or signing key\n- medium: a real-looking secret confined to tests, fixtures or examples\n- low: a credential for a service that only runs on the developer's machine, such as a database on `localhost` in a development settings file\n\nReport each secret once, at the line where its value is written.",
+    "challenges": [],
+    "note": ""
+  },
+  "defects": [],
+  "criteria": [
+    "false_challenge_rate",
+    "evidence_verified"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "id": "R3",
+  "description": "Two real findings are rated one level too low: Flask debug mode on every interface is high, and an unsafe YAML loader on request data is critical. A third finding is rated correctly.",
+  "target_id": "EX-CFG-v1",
+  "target": {
+    "workflow": "security_examiner",
+    "step": "insecure_config",
+    "summary": "Read app.py, views.py and client.py. Three settings weaken the application.",
+    "findings": [
+      {
+        "id": "CFG-1",
+        "title": "Flask debug mode is on and the app listens on every interface",
+        "severity": "medium",
+        "category": "debug-mode",
+        "file": "app.py",
+        "line": 10,
+        "evidence": "app.run(host=\"0.0.0.0\", port=8000, debug=True)",
+        "recommendation": "Turn debug off and bind to the interface the deployment needs.",
+        "advisory_ids": []
+      },
+      {
+        "id": "CFG-2",
+        "title": "Request body is loaded with the full YAML loader",
+        "severity": "high",
+        "category": "unsafe-deserialization",
+        "file": "views.py",
+        "line": 8,
+        "evidence": "settings = yaml.load(request.data, Loader=yaml.Loader)",
+        "recommendation": "Use yaml.safe_load on request data.",
+        "advisory_ids": []
+      },
+      {
+        "id": "CFG-3",
+        "title": "TLS verification is off on a call that sends a bearer token",
+        "severity": "high",
+        "category": "tls-verification",
+        "file": "client.py",
+        "line": 11,
+        "evidence": "verify=False",
+        "recommendation": "Remove verify=False and trust the internal CA instead.",
+        "advisory_ids": []
+      }
+    ],
+    "limitations": [],
+    "challenge_responses": []
+  },
+  "input_context": {
+    "workflow": "security_examiner",
+    "step": "insecure_config",
+    "workspace": "repo",
+    "checklist": "Look for settings that weaken the deployed application:\n- debug and development modes left on: Flask or Django `DEBUG = True`, `app.run(debug=True)`, `NODE_ENV=development` in a production file\n- TLS verification turned off: `verify=False`, `rejectUnauthorized: false`, `NODE_TLS_REJECT_UNAUTHORIZED=0`, `ssl._create_unverified_context()`\n- permissive CORS: `Access-Control-Allow-Origin: *`, `origins=\"*\"`, `CORS(app)` with no origins, worst when credentials are allowed too\n- a service bound to every interface (`0.0.0.0`) that serves an admin or debug endpoint without authentication\n- weak password hashing or session settings: MD5 or SHA-1 for passwords, session cookies without `Secure` or `HttpOnly`\n- unsafe handling of input: `pickle.loads` or `yaml.load` without a safe loader on outside data, `eval` or `exec` on request data, `shell=True` with request data\n- containers that run as root, or that publish admin consoles and database ports\n\nSeverity:\n- critical: outside input reaches code execution: `eval`, `exec`, `pickle.loads`, an unsafe YAML loader or a shell command built from request data\n- high: a setting that exposes the running production application directly: debug mode on, TLS verification off on calls that carry credentials or customer data, wildcard CORS with credentials allowed, an unauthenticated admin endpoint on every interface\n- medium: a setting that needs a second weakness to matter, such as wildcard CORS without credentials, TLS verification off on other calls, weak password hashing or cookie flags, a container running as root\n- low: any of these found only in a development or test file, unless that file is clearly the one deployed",
+    "challenges": [],
+    "note": ""
+  },
+  "defects": [
+    {
+      "finding_id": "CFG-1",
+      "severity": "major"
+    },
+    {
+      "finding_id": "CFG-2",
+      "severity": "major"
+    }
+  ],
+  "criteria": [
+    "defect_catch_rate",
+    "evidence_verified"
+  ]
+}

@@ -1,0 +1,149 @@
+{
+  "id": "W3",
+  "description": "The reviewer still blocks the re-examined secrets step, so the coordinator escalates it to a human.",
+  "disposition": {
+    "steps": [
+      {
+        "workflow": "security_examiner",
+        "step": "secrets",
+        "examination_id": "EX-SEC-v2",
+        "decision": "escalate",
+        "rationale": "The reviewer still blocks the examination after one re-examination, so a human must decide."
+      },
+      {
+        "workflow": "security_examiner",
+        "step": "insecure_config",
+        "examination_id": "EX-CFG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "known_vulnerabilities",
+        "examination_id": "EX-VULN-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "dependency_hygiene",
+        "examination_id": "EX-HYG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      }
+    ],
+    "summary": "Every step was examined and reviewed."
+  },
+  "examinations": {
+    "EX-SEC-v2": {
+      "workflow": "security_examiner",
+      "step": "secrets",
+      "summary": "Re-read keys/server.key. A private key is committed.",
+      "findings": [
+        {
+          "id": "SEC-1",
+          "title": "Private key committed to the repository",
+          "severity": "critical",
+          "category": "private-key",
+          "file": "keys/server.key",
+          "line": 1,
+          "evidence": "<redacted:----\u2026> starts the file",
+          "recommendation": "Revoke the key, issue a new one and remove the file from the history.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": [
+        {
+          "challenge_id": "RV-1-C1",
+          "response": "rejected",
+          "rationale": "The line holds the PEM header, which marks a private key block."
+        }
+      ]
+    },
+    "EX-CFG-v1": {
+      "workflow": "security_examiner",
+      "step": "insecure_config",
+      "summary": "Read app.py. One setting is permissive.",
+      "findings": [
+        {
+          "id": "CFG-1",
+          "title": "Responses allow requests from any origin",
+          "severity": "medium",
+          "category": "cors",
+          "file": "app.py",
+          "line": 9,
+          "evidence": "response.headers[\"Access-Control-Allow-Origin\"] = \"*\"",
+          "recommendation": "List the origins that need access instead of allowing every one.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-VULN-v1": {
+      "workflow": "dependency_examiner",
+      "step": "known_vulnerabilities",
+      "summary": "Looked up the pinned packages. None has an advisory.",
+      "findings": [],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-HYG-v1": {
+      "workflow": "dependency_examiner",
+      "step": "dependency_hygiene",
+      "summary": "Read requirements.txt. Every entry is pinned.",
+      "findings": [],
+      "limitations": [],
+      "challenge_responses": []
+    }
+  },
+  "reviews": {
+    "RV-2": {
+      "target_id": "EX-SEC-v2",
+      "verdict": "block",
+      "summary": "The reviewer still doubts the one finding.",
+      "challenges": [
+        {
+          "id": "RV-2-C1",
+          "finding_id": "SEC-1",
+          "lens": "challenge",
+          "severity": "critical",
+          "claim": "The cited line may not hold a complete private key.",
+          "evidence_checked": [
+            {
+              "file": "keys/server.key",
+              "line": 1
+            }
+          ],
+          "rationale": "The file holds the header and a short body, so the reviewer could not confirm a usable key."
+        }
+      ]
+    },
+    "RV-3": {
+      "target_id": "EX-CFG-v1",
+      "verdict": "pass",
+      "summary": "Opened app.py and confirmed the finding.",
+      "challenges": []
+    },
+    "RV-4": {
+      "target_id": "EX-VULN-v1",
+      "verdict": "pass",
+      "summary": "Confirmed the pins.",
+      "challenges": []
+    },
+    "RV-5": {
+      "target_id": "EX-HYG-v1",
+      "verdict": "pass",
+      "summary": "Confirmed the pins.",
+      "challenges": []
+    }
+  },
+  "challenges": [],
+  "criteria": [
+    "no_new_findings",
+    "high_severity_coverage",
+    "structure_valid_first_try",
+    "tone_score"
+  ]
+}

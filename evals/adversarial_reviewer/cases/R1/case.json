@@ -1,0 +1,70 @@
+{
+  "id": "R1",
+  "description": "Two findings quote lines that do not hold the quoted text: an AWS key where config.py reads the environment, and a database password where db.py does too. A third finding is real.",
+  "target_id": "EX-SEC-v1",
+  "target": {
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "summary": "Read config.py, db.py and .env. Two cloud and database credentials and one API token are written into the code.",
+    "findings": [
+      {
+        "id": "SEC-1",
+        "title": "AWS secret access key written into config.py",
+        "severity": "critical",
+        "category": "aws-key",
+        "file": "config.py",
+        "line": 5,
+        "evidence": "AWS_SECRET_ACCESS_KEY = \"<redacted:wJa\u2026>\"",
+        "recommendation": "Revoke the key, read it from the environment or a secret store and remove it from the history.",
+        "advisory_ids": []
+      },
+      {
+        "id": "SEC-2",
+        "title": "Database password written into db.py",
+        "severity": "high",
+        "category": "db-password",
+        "file": "db.py",
+        "line": 10,
+        "evidence": "password=\"<redacted:s3c\u2026>\"",
+        "recommendation": "Rotate the password and read it from a secret store.",
+        "advisory_ids": []
+      },
+      {
+        "id": "SEC-3",
+        "title": "Reporting API token written into .env",
+        "severity": "high",
+        "category": "api-token",
+        "file": ".env",
+        "line": 2,
+        "evidence": "REPORTING_API_TOKEN=<redacted:rpt\u2026>",
+        "recommendation": "Rotate the token and keep .env out of the repository.",
+        "advisory_ids": []
+      }
+    ],
+    "limitations": [],
+    "challenge_responses": []
+  },
+  "input_context": {
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "workspace": "repo",
+    "checklist": "Look for credentials written into the working tree. Check these first, in this order:\n- environment and configuration files: `.env`, `.env.*`, `*.ini`, `*.cfg`, `*.conf`, `*.yaml`, `*.yml`, `*.toml`, `*.json`, `settings.py`, `config.py`\n- private keys and certificates in text form: `*.pem`, `*.key`, `id_rsa`, and any file holding `-----BEGIN ... PRIVATE KEY-----`\n- source files that build clients: database URLs, SDK clients, HTTP calls that set headers\n- build and deployment files: `Dockerfile`, `docker-compose*.yml`, `.github/workflows/*`, `*.tf`\n\nWhat counts:\n- cloud keys: AWS access key IDs (`AKIA...`, `ASIA...`) and their 40-character secret keys, GCP service-account JSON, Azure connection strings\n- private key blocks\n- a password, secret, token or API key assigned a literal value: `password = \"...\"`, `API_KEY: ...`, `\"token\": \"...\"`\n- service tokens with a known prefix: `sk-`, `ghp_`, `xoxb-`, `AIza`\n- credentials inside a URL: `postgres://user:password@host`\n- a hard-coded framework signing key: Flask or Django `SECRET_KEY = \"...\"`\n\nWhat does not count, so do not report it:\n- a value read from the environment or a secret store: `os.environ[\"X\"]`, `os.getenv(\"X\")`, `process.env.X`, `${X}`\n- an obvious placeholder: `changeme`, `<your-key>`, `xxx`, `TODO`, an empty string\n- a hash, a public key or a commit SHA\n\nSeverity:\n- critical: a cloud or payment credential, a private key, or the password of a production database: whoever reads the repository can act as the client in production\n- high: any other live-looking credential, token, API key or signing key\n- medium: a real-looking secret confined to tests, fixtures or examples\n- low: a credential for a service that only runs on the developer's machine, such as a database on `localhost` in a development settings file\n\nReport each secret once, at the line where its value is written.",
+    "challenges": [],
+    "note": ""
+  },
+  "defects": [
+    {
+      "finding_id": "SEC-1",
+      "severity": "critical"
+    },
+    {
+      "finding_id": "SEC-2",
+      "severity": "critical"
+    }
+  ],
+  "criteria": [
+    "defect_catch_rate",
+    "critical_calibration",
+    "evidence_verified"
+  ]
+}

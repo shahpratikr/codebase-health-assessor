@@ -1,0 +1,28 @@
+{
+  "criteria": [
+    {
+      "name": "defect_catch_rate",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share of their defects that a challenge of the review catches: by naming the defective finding of an examination, or by citing the file and line the prose of a draft names, within 2 lines, with a challenge at least as serious as the defect."
+    },
+    {
+      "name": "false_challenge_rate",
+      "threshold": 0.2,
+      "comparison": "at_most",
+      "description": "Mean over the cases that list it of 1 when the review of an output without defects raises any challenge, otherwise 0."
+    },
+    {
+      "name": "critical_calibration",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of 1 when the review's verdict is the one the case's defects call for (block for a critical defect, challenge for any other, pass for none), otherwise 0."
+    },
+    {
+      "name": "evidence_verified",
+      "threshold": 0.8,
+      "comparison": "at_least",
+      "description": "Mean over the cases that list it of the share of the examination's critical and high findings whose file the reviewer opened with read_file."
+    }
+  ]
+}

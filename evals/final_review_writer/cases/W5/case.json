@@ -1,0 +1,201 @@
+{
+  "id": "W5",
+  "description": "The reviewer still challenges the severity of one finding after the examiner rejected the challenge; the coordinator accepts the examination.",
+  "disposition": {
+    "steps": [
+      {
+        "workflow": "security_examiner",
+        "step": "secrets",
+        "examination_id": "EX-SEC-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "security_examiner",
+        "step": "insecure_config",
+        "examination_id": "EX-CFG-v2",
+        "decision": "accept",
+        "rationale": "The examiner's rejection holds because the routes that send the header serve public data; the reviewer's concern is recorded and does not change the finding."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "known_vulnerabilities",
+        "examination_id": "EX-VULN-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "dependency_hygiene",
+        "examination_id": "EX-HYG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      }
+    ],
+    "summary": "Every step was examined and reviewed."
+  },
+  "examinations": {
+    "EX-SEC-v1": {
+      "workflow": "security_examiner",
+      "step": "secrets",
+      "summary": "Read settings.py. One credential is written into the code.",
+      "findings": [
+        {
+          "id": "SEC-1",
+          "title": "Signing key written into settings.py",
+          "severity": "high",
+          "category": "signing-key",
+          "file": "settings.py",
+          "line": 4,
+          "evidence": "SECRET_KEY = \"<redacted:k7Z\u2026>\"",
+          "recommendation": "Generate a new key and read it from the environment.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-CFG-v2": {
+      "workflow": "security_examiner",
+      "step": "insecure_config",
+      "summary": "Re-read app.py. One setting is permissive.",
+      "findings": [
+        {
+          "id": "CFG-1",
+          "title": "Responses allow requests from any origin",
+          "severity": "medium",
+          "category": "cors",
+          "file": "app.py",
+          "line": 9,
+          "evidence": "response.headers[\"Access-Control-Allow-Origin\"] = \"*\"",
+          "recommendation": "List the origins that need access instead of allowing every one.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": [
+        {
+          "challenge_id": "RV-2-C1",
+          "response": "rejected",
+          "rationale": "The routes that send this header serve public data and take no cookies, so medium holds."
+        }
+      ]
+    },
+    "EX-VULN-v1": {
+      "workflow": "dependency_examiner",
+      "step": "known_vulnerabilities",
+      "summary": "Looked up the pinned packages. One has advisories.",
+      "findings": [
+        {
+          "id": "VULN-1",
+          "title": "requests 2.19.0 has published advisories",
+          "severity": "high",
+          "category": "vulnerable-dependency",
+          "file": "requirements.txt",
+          "line": 3,
+          "evidence": "requests==2.19.0",
+          "recommendation": "Upgrade requests to 2.33.0 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-9hjg-9r4m-mvj7",
+            "GHSA-9wx4-h78v-vm56",
+            "GHSA-gc5v-m9x4-r6x2",
+            "GHSA-j8r2-6x86-q33q",
+            "GHSA-x84v-xcm2-53pg",
+            "PYSEC-2018-28",
+            "PYSEC-2023-74",
+            "PYSEC-2026-1872",
+            "PYSEC-2026-1873",
+            "PYSEC-2026-2275"
+          ]
+        }
+      ],
+      "limitations": [
+        "gunicorn has no exact version, so it could not be looked up."
+      ],
+      "challenge_responses": []
+    },
+    "EX-HYG-v1": {
+      "workflow": "dependency_examiner",
+      "step": "dependency_hygiene",
+      "summary": "Read requirements.txt. One entry is not pinned.",
+      "findings": [
+        {
+          "id": "HYG-1",
+          "title": "gunicorn is not pinned",
+          "severity": "medium",
+          "category": "unpinned",
+          "file": "requirements.txt",
+          "line": 7,
+          "evidence": "gunicorn",
+          "recommendation": "Pin an exact version.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    }
+  },
+  "reviews": {
+    "RV-1": {
+      "target_id": "EX-SEC-v1",
+      "verdict": "pass",
+      "summary": "Opened settings.py and confirmed the finding.",
+      "challenges": []
+    },
+    "RV-3": {
+      "target_id": "EX-CFG-v2",
+      "verdict": "challenge",
+      "summary": "The reviewer maintains one objection to the severity.",
+      "challenges": [
+        {
+          "id": "RV-3-C1",
+          "finding_id": "CFG-1",
+          "lens": "challenge",
+          "severity": "major",
+          "claim": "The wildcard origin also reaches the account endpoint, so the finding may be rated too low.",
+          "evidence_checked": [
+            {
+              "file": "app.py",
+              "line": 9
+            }
+          ],
+          "rationale": "The header is set for every response, including those of the account routes."
+        }
+      ]
+    },
+    "RV-4": {
+      "target_id": "EX-VULN-v1",
+      "verdict": "pass",
+      "summary": "Confirmed the pin and its advisories.",
+      "challenges": []
+    },
+    "RV-5": {
+      "target_id": "EX-HYG-v1",
+      "verdict": "pass",
+      "summary": "Opened requirements.txt and confirmed the finding.",
+      "challenges": []
+    }
+  },
+  "challenges": [
+    {
+      "id": "RV-6-C1",
+      "finding_id": "",
+      "lens": "catch",
+      "severity": "major",
+      "claim": "The previous draft does not say that the reviewer still disputes the severity of CFG-1.",
+      "evidence_checked": [
+        {
+          "file": "app.py",
+          "line": 9
+        }
+      ],
+      "rationale": "The disposition accepted the examination over the reviewer's objection, and the report should record that."
+    }
+  ],
+  "criteria": [
+    "no_new_findings",
+    "high_severity_coverage",
+    "structure_valid_first_try",
+    "tone_score"
+  ]
+}

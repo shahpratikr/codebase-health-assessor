@@ -1,0 +1,190 @@
+{
+  "id": "W2",
+  "description": "Critical and high findings in three steps and only a medium one in the fourth.",
+  "disposition": {
+    "steps": [
+      {
+        "workflow": "security_examiner",
+        "step": "secrets",
+        "examination_id": "EX-SEC-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "security_examiner",
+        "step": "insecure_config",
+        "examination_id": "EX-CFG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "known_vulnerabilities",
+        "examination_id": "EX-VULN-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      },
+      {
+        "workflow": "dependency_examiner",
+        "step": "dependency_hygiene",
+        "examination_id": "EX-HYG-v1",
+        "decision": "accept",
+        "rationale": "The reviewer passed the examination."
+      }
+    ],
+    "summary": "Every step was examined and reviewed."
+  },
+  "examinations": {
+    "EX-SEC-v1": {
+      "workflow": "security_examiner",
+      "step": "secrets",
+      "summary": "Read config.py and the tests. A cloud key and a test credential are written into the code.",
+      "findings": [
+        {
+          "id": "SEC-1",
+          "title": "AWS access key written into config.py",
+          "severity": "critical",
+          "category": "aws-key",
+          "file": "config.py",
+          "line": 4,
+          "evidence": "AWS_ACCESS_KEY_ID = \"AKIA...\"",
+          "recommendation": "Revoke the key and read it from the environment.",
+          "advisory_ids": []
+        },
+        {
+          "id": "SEC-2",
+          "title": "Test credential written into a fixture",
+          "severity": "medium",
+          "category": "test-secret",
+          "file": "tests/conftest.py",
+          "line": 7,
+          "evidence": "API_TOKEN = \"<redacted:tst\u2026>\"",
+          "recommendation": "Move the credential to the environment of the test job.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-CFG-v1": {
+      "workflow": "security_examiner",
+      "step": "insecure_config",
+      "summary": "Read app.py. Debug mode is on.",
+      "findings": [
+        {
+          "id": "CFG-1",
+          "title": "Flask debug mode is on",
+          "severity": "high",
+          "category": "debug-mode",
+          "file": "app.py",
+          "line": 23,
+          "evidence": "app.run(debug=True)",
+          "recommendation": "Turn debug off in the deployed configuration.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    },
+    "EX-VULN-v1": {
+      "workflow": "dependency_examiner",
+      "step": "known_vulnerabilities",
+      "summary": "Looked up the pinned packages. Two have advisories.",
+      "findings": [
+        {
+          "id": "VULN-1",
+          "title": "requests 2.19.0 has published advisories",
+          "severity": "high",
+          "category": "vulnerable-dependency",
+          "file": "requirements.txt",
+          "line": 3,
+          "evidence": "requests==2.19.0",
+          "recommendation": "Upgrade requests to 2.33.0 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-9hjg-9r4m-mvj7",
+            "GHSA-9wx4-h78v-vm56",
+            "GHSA-gc5v-m9x4-r6x2",
+            "GHSA-j8r2-6x86-q33q",
+            "GHSA-x84v-xcm2-53pg",
+            "PYSEC-2018-28",
+            "PYSEC-2023-74",
+            "PYSEC-2026-1872",
+            "PYSEC-2026-1873",
+            "PYSEC-2026-2275"
+          ]
+        },
+        {
+          "id": "VULN-2",
+          "title": "markdown 3.0 has published advisories",
+          "severity": "high",
+          "category": "vulnerable-dependency",
+          "file": "requirements.txt",
+          "line": 5,
+          "evidence": "markdown==3.0",
+          "recommendation": "Upgrade markdown to 3.8.1 or later, which fixes every advisory listed.",
+          "advisory_ids": [
+            "GHSA-5wmx-573v-2qwq",
+            "PYSEC-2026-89"
+          ]
+        }
+      ],
+      "limitations": [
+        "gunicorn has no exact version, so it could not be looked up."
+      ],
+      "challenge_responses": []
+    },
+    "EX-HYG-v1": {
+      "workflow": "dependency_examiner",
+      "step": "dependency_hygiene",
+      "summary": "Read requirements.txt. One entry is not pinned.",
+      "findings": [
+        {
+          "id": "HYG-1",
+          "title": "gunicorn is not pinned",
+          "severity": "medium",
+          "category": "unpinned",
+          "file": "requirements.txt",
+          "line": 7,
+          "evidence": "gunicorn",
+          "recommendation": "Pin an exact version.",
+          "advisory_ids": []
+        }
+      ],
+      "limitations": [],
+      "challenge_responses": []
+    }
+  },
+  "reviews": {
+    "RV-1": {
+      "target_id": "EX-SEC-v1",
+      "verdict": "pass",
+      "summary": "Opened config.py and the fixture and confirmed both findings.",
+      "challenges": []
+    },
+    "RV-2": {
+      "target_id": "EX-CFG-v1",
+      "verdict": "pass",
+      "summary": "Opened app.py and confirmed the finding.",
+      "challenges": []
+    },
+    "RV-3": {
+      "target_id": "EX-VULN-v1",
+      "verdict": "pass",
+      "summary": "Confirmed both pins and their advisories.",
+      "challenges": []
+    },
+    "RV-4": {
+      "target_id": "EX-HYG-v1",
+      "verdict": "pass",
+      "summary": "Opened requirements.txt and confirmed the finding.",
+      "challenges": []
+    }
+  },
+  "challenges": [],
+  "criteria": [
+    "no_new_findings",
+    "high_severity_coverage",
+    "structure_valid_first_try",
+    "tone_score"
+  ]
+}
