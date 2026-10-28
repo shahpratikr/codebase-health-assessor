@@ -23,14 +23,14 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli` (argument parsing only), `config`, `audit`, `llm`, `manifest` (not drawn; `cli` will load the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner` and `coordinator` call it), `agents.runner` and `coordinator`. Nothing calls `coordinator` yet: `cli` will, once a run is wired.
+Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
 | Anthropic Messages API, via `client.beta.messages.create` | model, system prompt, messages (including file contents the agents' tools returned), tool definitions, effort, output schema, the server-side fallback beta and mode; credentials from the SDK's credential chain | content blocks, usage (tokens and fallback iterations), the model that served the call, stop reason |
 | OSV, `https://api.osv.dev/v1/query` | package name, ecosystem (PyPI or npm), version | advisories |
 | Client repository | nothing | file contents, read in place from a directory or from a zip extracted into the run directory |
-| Runs directory | the audit trail; *(planned)* the run record, agent outputs, report and decisions | the audit trail's existing lines, read on reopen |
+| Runs directory | the audit trail, the run record, agent outputs, report, summary and decisions | the audit trail's existing lines, read on reopen; a run's `run.json`, `report.md` and `decisions.jsonl`, read by `assess decide` |
 
 Evals *(planned)* run the same agent code through the same gateway in their own process. They answer OSV queries from a replay file instead of the live service.
 
@@ -51,7 +51,7 @@ codebase-health-assessor/
 │   ├── tools/__init__.py, tools/files.py, tools/deps.py
 │   ├── agents/runner.py
 │   ├── coordinator.py
-│   └── gates.py, report.py                                                           (planned)
+│   └── gates.py, report.py
 ├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic; fixtures/ holds an OSV
 │                                 #   replay sample
 ├── manifests/                    # one JSON manifest per agent, substance.json
@@ -69,9 +69,9 @@ codebase-health-assessor/
 
 | Component | Responsibility | Depends on |
 |---|---|---|
-| `cli` | `build_parser()` defines `run` and `decide` and validates their arguments. `main(argv)` returns the exit code. Both commands are stubs today. *(planned)* Wires a run (input, credentials, run directory, coordinator, gates, report) and the decide path. | `config`; *(planned)* `coordinator`, `gates`, `report`, `sandbox`, `manifest`, `audit`, and `llm` for credentials |
-| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `DISPATCH_ERROR_CODES` (with its `RETRYABLE_DISPATCH_ERRORS` subset), `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS`, `SUBSTANCE_RATINGS`, `CONTRACTS`, the output value enums, `SECTION_STATUSES` with `FAILING_SEVERITIES`, and `HALT_REASONS` (Closed sets), API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Run-directory names (`EXAMINATIONS_DIR`, `REVIEWS_DIR`, `DRAFTS_DIR`). Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. Guardrail settings: `ADVISORY_STEP`, `DISPATCH_ERROR_MAX_DETAILS`, `DISPATCH_ERROR_TEXT_MAX_CHARS`, `REDACT_KEEP_CHARS`. *(planned)* Every other closed set. | standard library |
-| `audit` | `AuditLog`: one run's append-only JSONL trail. Validates each line against `audit_event.schema.json` before writing, computes cost from pricing, generates correlation IDs (`new_correlation_id`). *(planned)* Per-agent summary totals. | `config`, `jsonschema` |
+| `cli` | `build_parser()` defines `run` and `decide` and validates their arguments. `main(argv, *, clock)` returns the exit code. A run checks the input and the ratings file, asks `llm` for a client, creates the run directory, runs the coordinator, opens the gates, renders the report, writes `disposition.json`, `summary.json` and `run.json`, and prints the outcome. `decide` calls `gates.decide` and prints the effective status. It redacts the coordinator's disposition text and a decision's `--note` before they are written. | `config`, `coordinator`, `gates`, `report`, `sandbox`, `manifest`, `audit`, `guardrails` (`redact`), and `llm` (`make_client`, `NoCredentialsError`) |
+| `config` | Repo-root paths (`ROOT`, `PRICING_FILE`, `SCHEMAS_DIR`, `MANIFESTS_DIR`, `SUBSTANCE_FILE`), `CORRELATION_ID`, the closed sets `AUDIT_EVENTS`, `LLM_ERROR_CODES`, `DISPATCH_ERROR_CODES` (with its `RETRYABLE_DISPATCH_ERRORS` subset), `AGENT_ROLES`, `EFFORTS`, `SUBAGENT_TOOLS`, `SUBSTANCE_RATINGS`, `CONTRACTS`, the output value enums, `SECTION_STATUSES` with `FAILING_SEVERITIES`, `HALT_REASONS` (Closed sets), the run-end sets `RUN_STATUSES`, `RUN_EXIT_CODES`, `GATES`, `HUMAN_DECISIONS`, `HUMAN_STATUSES`, `ELEVATING_PERIPHERAL_COUNT` and `REPORT_TITLES`, API constants (`MAX_TOKENS`, `SDK_MAX_RETRIES`, `FALLBACK_BETA`, `FALLBACKS`), `runs_dir()`, `load_pricing()` and `check_pricing()`. Run-directory names (`EXAMINATIONS_DIR`, `REVIEWS_DIR`, `DRAFTS_DIR`, `RUN_FILE`, `SUMMARY_FILE`, `DISPOSITION_FILE`, `REPORT_FILE`, `DECISIONS_FILE`), `TOKEN_FIELDS`. Workspace and read caps (`WORKSPACE_DIR`, `ZIP_MAX_ENTRIES`, `ZIP_MAX_BYTES`, `READ_MAX_LINES`, `READ_MAX_BYTES`, `LIST_MAX_ENTRIES`, `SKIPPED_DIRS`), OSV settings (`OSV_URL`, `OSV_TIMEOUT_SECONDS`, `OSV_ECOSYSTEMS`, `OSV_VERSION_RANGES`, `OSV_SUMMARY_MAX_CHARS`), `DEPENDENCY_FILE_KINDS`, `DEPENDENCY_FILES` and `osv_replay()`. Guardrail settings: `ADVISORY_STEP`, `DISPATCH_ERROR_MAX_DETAILS`, `DISPATCH_ERROR_TEXT_MAX_CHARS`, `REDACT_KEEP_CHARS`. | standard library |
+| `audit` | `AuditLog`: one run's append-only JSONL trail. Validates each line against `audit_event.schema.json` before writing, computes cost from pricing, generates correlation IDs (`new_correlation_id`) and audit timestamps (`timestamp`). `AuditLog.summary()` totals the log's `llm_call` lines per agent and overall. | `config`, `jsonschema` |
 | `llm` | The Messages API gateway. `call()` builds the request, writes one `llm_call` line per call and maps failures to `LLMError`. `make_client()` returns an SDK client or raises `NoCredentialsError`. | `anthropic`, `config`, `audit` |
 | `manifest` | `load_manifests()` loads `coordinator.json` and the manifest each `launch_<agent>` tool names, and fails closed (`ValueError` naming the file) on the checks under Agents. `load_substance(manifests, path)` loads the shipped or a replacement ratings file the same way. An `OSError` from reading `coordinator.json`, a sub-agent manifest that exists, the substance file or the pricing file propagates as is. | `config`, `jsonschema` |
 | `sandbox` | `Workspace`: `resolve()` confines every path to the workspace root (`Path.resolve()` plus an `is_relative_to` check, so symlinks cannot escape) and refuses NUL and characters the filesystem cannot encode (lone surrogates other than U+DC80-U+DCFF, which stand for name bytes that are not UTF-8), absolute paths and paths through `SKIPPED_DIRS` in any letter case. `read_lines()` applies the read caps, refuses binary (NUL-holding) files and reads bytes that are not UTF-8 as U+FFFD; it is the one place lines are counted. `walk()` lists files lazily, without following directory symlinks, skipping looping ones and skipping, and reporting, directories it cannot open. `check_input()` refuses a missing path, a non-zip file, an archive whose entry list cannot be read (a newer format version, a name that is not UTF-8) and an archive over the caps or with an escaping or encrypted entry, reading only the entry list and writing nothing. `open_workspace()` returns a directory in place or extracts a zip member by member into `<run_dir>/workspace/`; a member that fails only when read (an unsupported compression method, a bad CRC) fails there, and the partial workspace is removed. Input problems raise `ValueError`. | `config` |
@@ -79,8 +79,8 @@ codebase-health-assessor/
 | `guardrails` | `validate(contract, output, ctx)` returns a copy of the output once it passes its contract's JSON Schema and then its semantic checks, or raises `DispatchError` (Interfaces, Output contracts). `ctx` is the contract's context: `ExaminationContext`, `ReviewContext`, `WriterContext` or `DispositionContext`. `DispatchError(code, message, details)` carries a code from `DISPATCH_ERROR_CODES` and its `retryable` flag, and `to_result()` gives the object the coordinator receives. `redact(value)` masks secret-like values in every string of a JSON value. | `config`, `sandbox`, `jsonschema` |
 | `agents.runner` | `run_subagent(client, audit, manifest, task, ctx, *, workspace, workflow, step, parent_step_id, osv=None)` runs one sub-agent invocation in a conversation of its own: it sends only the manifest's tools, runs the tool loop up to `max_tool_calls`, and returns the answer once `guardrails.validate` accepts it, redacted except the references `validate` checked, or raises `DispatchError`. `examiner_task`, `review_task` and `writer_task` build the tasks (Interfaces, `agents.runner`); `checklist_section` finds a step's section of the examiner's skills. | `llm`, `tools`, `guardrails`, `audit`, `sandbox` (the `Workspace` type), `config` |
 | `coordinator` | `run(client, audit, manifests, *, workspace, workspace_label, osv=None)` runs the coordinator's conversation over `llm.call` with only its `launch_*` tools, answers each `launch_*` block through its handler (input check, retry cap, ID resolution, writer preconditions), dispatches through `agents.runner`, assigns the examination, review, challenge and draft IDs, writes each accepted output once, and returns a `RunState` that holds the halt reason when the run halted. `tool_definitions(manifests)` builds the strict launch tools from the manifests; `section_status(findings)` is the PASS/FAIL rule. | `agents.runner`, `guardrails`, `manifest`, `llm`, `audit`, `sandbox` (the `Workspace` type), `config`, `jsonschema` |
-| `gates` *(planned)* | Opens gates once at run end, appends decisions to `decisions.jsonl` under `fcntl.flock`, and derives the effective status. | `audit`, `config` |
-| `report` *(planned)* | Assembles `report.md` from the title map, the computed statuses, the writer's prose and the review trail. | `config` |
+| `gates` | `open_gates(ratings=, disposition=, verdicts=, draft_id=, latest=)` returns the gates open at run end, each `{gate, subjects}`, in `GATES` order. `decide(correlation_id, *, decision, reviewer, note=None, runs_dir=None, os_user=, clock=)` appends a decision record to `decisions.jsonl` and a `decision_recorded` audit line under an exclusive `fcntl.flock`, and returns the record; it raises `DecisionRefused` for an unknown run, a `run.json` that is missing or not a run record, a run with no open gate and a run already decided. `effective_status(correlation_id, *, runs_dir=None)` derives the status from `run.json` and `decisions.jsonl`. | `audit`, `config` |
+| `report` | `render(...)` returns `report.md`: a section per step, titled from `REPORT_TITLES` with the status computed from the named examination's findings, the writer's prose under each, the review trail and, for a pending run, the human-review text. Every other heading is a fixed literal, and every `<` in model-written or operator-chosen text becomes `&lt;`, so no tag or comment can hide or forge a heading or a status. It keeps its own PASS/FAIL rule over `FAILING_SEVERITIES` because it may import only `config`; `tests/test_report.py` keeps it equal to `coordinator.section_status`. | `config` |
 | `evals` *(planned)* | `run.py` runs agents through the gateway and writes results. `scoring.py` holds the per-agent scorers. `scripted_dispatcher.py` stands in for the sub-agents in coordinator evals. `judges/tone.md` is the writer's tone judge. | `assessor.*` |
 
 Which imports are allowed between these modules: see CLAUDE.md.
@@ -136,14 +136,14 @@ A sub-agent's system prompt is its prompt followed by each of its skills, separa
 | Entry | Written by | Lifecycle |
 |---|---|---|
 | `audit.jsonl` | `AuditLog.append` | append-only; each line flushed and fsynced |
-| `run.json` *(planned)* | `cli` at run end | written once: input, started and finished times, status, gates, halt_reason |
-| `summary.json` *(planned)* | `audit` | written once: per-agent totals equal to the sums of the parseable audit lines |
+| `run.json` | `cli` at run end | written once: correlation_id, input (path and kind), started and finished times, status, gates (each `{gate, subjects}`), halt_reason; written for a halted run too |
+| `summary.json` | `cli`, from `AuditLog.summary()` | written once, for a halted run too: per-agent and overall totals (`llm_calls`, the four token counts, `cost_usd`, `unpriced_calls`) equal to the sums of the valid `llm_call` lines |
 | `examinations/EX-*.json`, `reviews/RV-*.json`, `drafts/DR-*.json` | `coordinator`, which assigns the IDs | one file per accepted output, the redacted output as ASCII-escaped JSON, created exclusively (an existing file raises `FileExistsError`); rejected outputs are never stored. A review's file holds its challenges with their IDs |
-| `disposition.json`, `report.md` *(planned)* | `coordinator`, `report` | written once, when the run does not halt |
-| `decisions.jsonl` *(planned)* | `gates` | append-only, under `fcntl.flock` |
-| `workspace/` | `sandbox.open_workspace` *(planned: called by `cli` at run start)* | zip input only; never merged into an existing one, removed when extraction fails |
+| `disposition.json`, `report.md` | `cli` (the disposition with its rationales redacted), `report` | written once, when the run does not halt |
+| `decisions.jsonl` | `gates` | append-only, under `fcntl.flock`; created by the first decision |
+| `workspace/` | `sandbox.open_workspace`, called by `cli` at run start | zip input only; never merged into an existing one, removed when extraction fails |
 
-The effective status *(planned)* is derived from `run.json` plus `decisions.jsonl`.
+The effective status is derived from `run.json` plus `decisions.jsonl` (`gates.effective_status`): a `pending_human` run with a decision is `finalized_by_human` (continue) or `rejected_by_human` (reject); any other run keeps its own status.
 
 ### Audit trail
 
@@ -171,7 +171,10 @@ A line is a JSON object in the shape `schemas/audit_event.schema.json` defines. 
 - **`guardrail_rejected` fields:** `parent_step_id`, `agent`, `workflow`, `step`, `code` (one of `DISPATCH_ERROR_CODES`) and `problems`, the number of entries in the error's `details`. `agents.runner` writes one, with the sub-agent's labels, when an answer is not JSON or fails `validate`, when an invocation passes its tool-call cap, and when a `tool_use` stop calls no tool (`API_ERROR`). A failed model call is recorded on its `llm_call` line instead. `coordinator` writes one for each launch it refuses before dispatching: `agent` is `coordinator`, `parent_step_id` is null, and `workflow` and `step` are the labels the dispatch would have had, as far as they were checked (null otherwise).
 - **`dispatch_started` fields:** `agent`, `workflow`, `step`: the labels every line of the invocation carries (a review carries its target's `workflow` and `step`, the writer `final_review_writer` and null); `target_id`: the examination or draft ID under review, null for any other dispatch. Every `llm_call`, `tool_call` and `guardrail_rejected` line of the invocation has this line's `step_id` as its `parent_step_id`. The coordinator's own `llm_call` lines carry a null `parent_step_id`.
 - **`dispatch_finished` fields:** `parent_step_id` (the `dispatch_started` line), `agent`, `workflow`, `step`; `output_id`: the ID of the accepted output; `code`: the `DispatchError` code when the dispatch produced none. Exactly one of `output_id` and `code` is null. A dispatch that raises anything but `DispatchError` writes no `dispatch_finished` line.
-- **Other events** (`run_started`, `gate_opened`, `run_finished`, `decision_recorded`) are envelope-only until their payload is added to the schema *(planned)*.
+- **`gate_opened` fields:** `gate` (one of `GATES`) and `subjects`, at least one harness-assigned label: examination or draft IDs, `<workflow>.<step>` keys or workflow names.
+- **`run_finished` fields:** `status` (one of `RUN_STATUSES`) and `halt_reason` (a `HALT_REASONS` value exactly when the status is `halted`, otherwise null).
+- **`decision_recorded` fields:** `decision`, `reviewer`, `gates_resolved` (at least one gate) and `report_sha256`. The note stays in `decisions.jsonl`.
+- **`run_started`** is envelope-only: `run.json` holds the input.
 - **Torn last line:** a line without its newline stays in the file as its own unparseable line. The next append starts on a new line, and readers skip unparseable lines.
 - **Failed write:** the line may still reach the file, so the log rescans before its next append. A caller that retries the append can leave the event in the file twice.
 
@@ -211,26 +214,26 @@ Also built, for the output contracts; the contract schemas repeat the value enum
 
 Also built, in `config`, and pinned by `tests/test_config.py`; no schema repeats them:
 
-- **Section status** (`SECTION_STATUSES`): PASS, FAIL. FAIL when a finding's severity is in `FAILING_SEVERITIES` (critical, high); `coordinator.section_status` applies it.
-- **Halt reasons** (`HALT_REASONS`): `COORDINATOR_TURN_LIMIT`, `COORDINATOR_REFUSAL`, `COORDINATOR_MAX_TOKENS`, `COORDINATOR_API_ERROR` (set by `coordinator`); `NO_REPORT`, `REPORT_NOT_REVIEWED` *(planned: set at run end)*
+- **Section status** (`SECTION_STATUSES`): PASS, FAIL. FAIL when a finding's severity is in `FAILING_SEVERITIES` (critical, high); `coordinator.section_status` and `report` each apply it.
+- **Halt reasons** (`HALT_REASONS`): `COORDINATOR_TURN_LIMIT`, `COORDINATOR_REFUSAL`, `COORDINATOR_MAX_TOKENS`, `COORDINATOR_API_ERROR` (set by `coordinator`); `NO_REPORT`, `REPORT_NOT_REVIEWED` (set by `cli` at run end, only when the coordinator did not halt the run)
 
-*(planned)*:
+Also built, in `config`, and pinned by `tests/test_config.py`; `tests/test_audit.py` keeps the audit schema's enums equal to them:
 
-- **Run status:** `finalized`, `pending_human`, `halted`; derived from decisions: `finalized_by_human`, `rejected_by_human`
-- **Gates:** `SUBSTANCE_ELEVATION`, `OPEN_CRITICAL_CHALLENGE`, `COORDINATOR_ESCALATION`
-- **Human decision:** continue, reject
-- **Report titles:**
-  - `SEC`: "Secrets exposure"
-  - `CFG`: "Insecure configuration"
-  - `VULN`: "Known vulnerable dependencies"
-  - `HYG`: "Dependency hygiene"
+- **Run status** (`RUN_STATUSES`): `finalized`, `pending_human`, `halted`; exit codes (`RUN_EXIT_CODES`): 0, 3, 1. Derived from decisions (`HUMAN_STATUSES`): `finalized_by_human` (continue), `rejected_by_human` (reject)
+- **Gates** (`GATES`): `SUBSTANCE_ELEVATION`, `OPEN_CRITICAL_CHALLENGE`, `COORDINATOR_ESCALATION`
+- **Human decision** (`HUMAN_DECISIONS`): continue, reject
+- **Report titles** (`REPORT_TITLES`, keyed by the writer's section key, in report order):
+  - `security_examiner.secrets`: "Secrets exposure"
+  - `security_examiner.insecure_config`: "Insecure configuration"
+  - `dependency_examiner.known_vulnerabilities`: "Known vulnerable dependencies"
+  - `dependency_examiner.dependency_hygiene`: "Dependency hygiene"
 
 ## Key flows
 
 **Argument parsing** (built)
 1. `main(argv)` parses with `build_parser()`.
 2. Any argument that breaks the contract under Interfaces makes argparse exit 2. `--help` exits 0.
-3. A valid command prints `assess <command>: not implemented yet` to stderr and returns 1.
+3. A valid command goes to `assess run` or `assess decide`, below.
 
 **One model call: `llm.call`** (built)
 1. Builds the request:
@@ -282,24 +285,32 @@ Also built, in `config`, and pinned by `tests/test_config.py`; no schema repeats
    - writer: `writer_task(disposition, the examinations it names, the latest review of each, the draft challenges)`; a `WriterContext` of every step and every ID the harness assigned that the task holds: examination, finding, review and challenge IDs (user decision), so advisory and CWE IDs stay uncited
 6. A `DispatchError` from the runner goes back to the coordinator unchanged after a `dispatch_finished` line with its code, and the harness never sends it again on its own. An accepted output gets its ID, its file and a compact result (Interfaces, Coordinator tools), then a `dispatch_finished` line with the ID.
 
-**`assess run`** *(planned)*
-1. `cli` checks the input path, then calls `llm.make_client()`. A missing path or a file that is not a zip exits 2 with a message, and so does `NoCredentialsError`. In every one of these cases no run directory is created.
-2. It creates the correlation ID and the run directory, passes the client to `coordinator`, appends `run_started`, and opens a `Workspace`: the directory in place, or the zip extracted under caps.
-3. `coordinator.run` runs the coordinator (One coordinator run, above).
+**`assess run`** (built)
+1. `cli` checks the input path (`sandbox.check_input`), loads the manifests and the ratings file (`manifest.load_substance`, the shipped one unless `--substance` names another), then calls `llm.make_client()`. A missing path, a file that is not a zip, a zip over the caps or with an escaping entry, a directory that holds the runs directory (the run would write into the client's tree), a ratings file the loader refuses and `NoCredentialsError` each exit 2 with `assess run: <message>` on stderr. In every one of these cases no run directory is created.
+2. It creates the correlation ID and opens a `Workspace` (`sandbox.open_workspace`): the directory in place, or the zip extracted under caps into `runs/<cid>/workspace/`. An extraction that fails after the zip passed the entry check exits 2 and removes the run directory. It then appends `run_started`.
+3. `coordinator.run` runs the coordinator (One coordinator run, above). `osv` is left unset, so each `query_osv` call builds its transport (`tools.execute`).
 4. The run ends one of three ways:
    - The coordinator ends its turn: on to gates and the report.
-   - The coordinator hits its turn cap, or one of its own calls ends in refusal, max_tokens or an API error: the run halts with the matching halt reason.
+   - The coordinator hits its turn cap, or one of its own calls ends in refusal, max_tokens or an API error: the run halts with that halt reason. A coordinator halt reason is final, whatever the run holds.
    - No successful draft (`NO_REPORT`) or no review on the latest draft (`REPORT_NOT_REVIEWED`): the run halts.
-5. `gates` opens:
-   - `OPEN_CRITICAL_CHALLENGE` for any accepted examination or final draft whose latest review is `block`
+5. A run that did not halt takes the latest draft's disposition, with its rationales and summary redacted, and `gates.open_gates` opens, from the latest verdict of each reviewed output:
+   - `OPEN_CRITICAL_CHALLENGE` for each examination whose latest review is `block`, whether or not the coordinator accepted it, and for the latest draft when its latest review is `block`. The examinations counted are the ones the disposition names and the newest reviewed version of each step, so neither naming an older version nor leaving a newer one unreviewed can hide a block; a superseded version that no longer is either opens nothing.
    - `COORDINATOR_ESCALATION` for any step dispositioned `escalate`
-   - `SUBSTANCE_ELEVATION` when the substance ratings trip the rule in docs/PRD.md, Glossary
-6. `report` renders `report.md`, computing each section's status from its accepted examination's findings (rule: docs/PRD.md, What it does). `cli` writes `disposition.json`, `run.json` and `summary.json`, appends `run_finished`, prints the correlation ID, status and open gates, and exits.
+   - `SUBSTANCE_ELEVATION` when the ratings trip the rule in docs/PRD.md, Glossary: the gate's subjects are the toy workflows, or, with none, the peripheral ones
+6. The status is `pending_human` when a gate is open, otherwise `finalized`. `report.render` renders `report.md`, computing each section's status from its named examination's findings (rule: docs/PRD.md, What it does). `cli` then writes, each exclusively: `disposition.json`, `report.md` (both only for a run that did not halt), one `gate_opened` line per gate, `summary.json`, `run.json`, and last the `run_finished` line. It prints:
 
-**`assess decide`** *(planned)*
-1. `cli` resolves the run. It refuses (exit 1) an unknown cid, a run with no open gate, and a run already decided.
-2. `gates` takes an exclusive `fcntl.flock` on `decisions.jsonl` and checks again for an earlier decision.
-3. It appends one decision record, then a `decision_recorded` audit line. `report.md`, `run.json` and earlier audit lines are not touched.
+   ```
+   correlation_id: <cid>
+   status: <status>
+   open_gates: <gate, gate | none>
+   ```
+
+   and exits with the status's code (Interfaces). A failure while writing propagates as an error, so that run has no `run_finished` line.
+
+**`assess decide`** (built)
+1. `cli` redacts the note, then calls `gates.decide`. It refuses (exit 1, `assess decide: <reason>` on stderr) an unknown cid, a run whose `run.json` is missing or is not a run record (valid status, gates naming `GATES` values), a run with no open gate (finalized or halted) and a run already decided.
+2. `gates` takes an exclusive `fcntl.flock` on `decisions.jsonl` and checks again for an earlier decision; a line that does not parse as a JSON object is not a decision, and a parseable record that lost its newline is.
+3. It appends one decision record, fsynced, then a `decision_recorded` audit line, both under the lock. `report.md`, `run.json` and earlier audit lines are not touched. `cli` prints `correlation_id`, `decision` and the effective status (`finalized_by_human` or `rejected_by_human`), and exits 0.
 
 **Eval run** *(planned)*
 1. `evals.run` loads the agent's `criteria.json` and its 5 cases.
@@ -316,13 +327,14 @@ assess run <dir|zip> [--substance FILE]
 assess decide <cid> --decision continue|reject --reviewer NAME [--note TEXT]
 ```
 
-Abbreviated options are refused. `<cid>` must match `config.CORRELATION_ID`, and `NAME` must contain a letter or digit. `--substance` replaces `manifests/substance.json` for one run *(planned)*.
+Abbreviated options are refused. `<cid>` must match `config.CORRELATION_ID`, and `NAME` must contain a letter or digit. `--substance` replaces `manifests/substance.json` for one run.
 
 | Command | 0 | 1 | 2 | 3 |
 |---|---|---|---|---|
-| today, both commands | `--help` | after parsing (stub) | usage error | — |
-| `assess run` *(planned)* | finalized | halted | usage or input error, missing path, not a zip, no credentials; no run directory | pending_human |
-| `assess decide` *(planned)* | recorded | refused | usage error | — |
+| `assess run` | finalized | halted | usage or input error, missing path, not a zip, a zip over the caps, a directory holding the runs directory, a refused ratings file, no credentials; no run directory | pending_human |
+| `assess decide` | recorded | refused | usage error | — |
+
+`--help` exits 0 for both. An error that is neither of these, such as a failed write into the run directory, ends the process with a traceback, which Python exits 1 for.
 
 ### `llm.call` (built)
 
@@ -356,7 +368,7 @@ Every builder copies its inputs, so later changes to the caller's objects do not
 
 ### `coordinator` (built)
 
-- `run(client, audit, manifests, *, workspace, workspace_label, osv=None) -> RunState`. `manifests` is what `manifest.load_manifests()` returns. `workspace_label` names the repository in the coordinator's and the examiners' tasks. `osv` is passed to every `run_subagent`, so pass one transport per run. It raises `ValueError`, before any request or audit line, for a coordinator tool that launches no loaded sub-agent. Any error other than `DispatchError` from `run_subagent`, and any error reading an agent's prompt or skills or writing the audit or an output file, propagates; the dispatch it interrupts then has a `dispatch_started` line and no `dispatch_finished`.
+- `run(client, audit, manifests, *, workspace, workspace_label, osv=None) -> RunState`. `manifests` is what `manifest.load_manifests()` returns. `workspace_label` names the repository in the coordinator's and the examiners' tasks. `osv` is passed to every `run_subagent`; pass one transport to share it across the run, or none, as `cli` does, so `tools.execute` builds one per `query_osv` call. It raises `ValueError`, before any request or audit line, for a coordinator tool that launches no loaded sub-agent. Any error other than `DispatchError` from `run_subagent`, and any error reading an agent's prompt or skills or writing the audit or an output file, propagates; the dispatch it interrupts then has a `dispatch_started` line and no `dispatch_finished`.
 - `RunState`: `examinations`, `reviews` and `drafts`, each mapping an ID to `Accepted(id, workflow, step, output, task)` in acceptance order; `latest_review` (target ID → review ID); `dispatches` (cap key → count); `turns` (coordinator calls made); `halt_reason`, a `HALT_REASONS` value, or null when the coordinator ended its turn. A draft's `task` holds the disposition it was written from, and a review's `output` holds its challenges with their IDs.
 - `tool_definitions(manifests)` returns the launch tools below. `section_status(findings)` returns PASS or FAIL (Closed sets).
 
@@ -417,19 +429,21 @@ An accepted examination comes back with an `id` (`<code>-<n>`, in order) on each
 
 Assignments are masked before the token kinds, so a value is masked whole even when it starts with a token, and a value that already is or holds a marker is left as it is. Masking is fail-safe, so code values are masked too: `max_tokens=4096`, `api_key: str | None = None`, a YAML-like `password: str` or `Token: none` at the end of a line. Not masked: other names (`passwd`, `pwd`, `private_key`), URL user info (`postgres://u:p@h`), `Authorization: Bearer …`, command-line flags (`--password x`, `curl -u u:p`), XML attributes and elements, YAML values followed by a comment or inside a flow mapping or block scalar, Markdown-decorated names (`**password**:`), the leading literal of a call (so `SecretStr("x")` keeps `x`), a literal after an unquoted reference (`process.env.PW || "x"`), a value continued on the next line with `\`, a PEM body line without its `BEGIN` line, and secrets inside dict keys or non-JSON values.
 
-### `report.md` *(planned)*
+### `report.md`
 
 The harness renders every heading:
 1. `# Codebase Health Assessment — <input name>`
-2. The correlation ID, generated-at time, and status at generation with its gates
+2. The correlation ID, generated-at time (the run's finish time), and status at generation with its open gates
 3. `## Executive summary`
 4. `## <Title> — PASS|FAIL` for each of the 4 steps, each followed by the writer's prose
-5. `## Review trail`: a table of step | examination | review verdict | coordinator decision | rationale
-6. `## Human review`: static text listing the open gates, only when the status is pending_human
+5. `## Review trail`: a table of step (its title) | examination | review verdict (its latest review) | coordinator decision | rationale. The rationale is the coordinator's, redacted, with whitespace collapsed, `|` and `\` escaped and `<` written as `&lt;`
+6. `## Human review`: static text listing the open gates, each with the IDs it names (`Subjects:`), only when the status is pending_human
 
-### `decisions.jsonl` record *(planned)*
+The sections follow `REPORT_TITLES`, whatever order the disposition and the draft use. The examination behind each section is the one the disposition names. `render` refuses a status that disagrees with the gates (`pending_human` exactly when a gate is open, never `halted`), a step with no title and a draft with no section for a step. Every `<` in the executive summary, the prose, the rationales and the input name becomes `&lt;`, redaction markers included, and a backslash goes before the first marker of any line that would open a code fence (zero or more spaces or tabs, then three or more backticks or tildes), and a carriage return counts as a line break, so an unclosed fence cannot turn later headings into code. It returns text that may hold a lone surrogate from the writer's prose; `cli` writes it with backslash escapes.
 
-`correlation_id`, `decision`, `reviewer`, `os_user`, `note`, `decided_at` (UTC), `gates_resolved`, `report_sha256`.
+### `decisions.jsonl` record
+
+`correlation_id`, `decision`, `reviewer`, `os_user` (the account name of the process's uid from the password database, not the `USER` or `LOGNAME` variable, which the caller sets), `note` (redacted, or null), `decided_at` (UTC, the audit's timestamp format), `gates_resolved` (every gate in `run.json`) and `report_sha256` (of `report.md` as it stood). One JSON object per line, ASCII-escaped.
 
 ### Evals *(planned)*
 
@@ -454,7 +468,7 @@ A criterion passes only when it meets its threshold in every run.
 | Key | Where | Default | Status |
 |---|---|---|---|
 | `ANTHROPIC_API_KEY` | environment | the SDK credential chain (API key, auth token or credentials provider) | built |
-| `ASSESSOR_RUNS_DIR` | environment | `runs`, relative to the working directory; an empty value counts as unset | built |
+| `ASSESSOR_RUNS_DIR` | environment | `runs`, relative to the working directory; an empty value counts as unset. `assess run` refuses a directory input that is the runs directory or one of its ancestors, compared by file identity | built |
 | `ASSESSOR_OSV_REPLAY` | environment, read by `config.osv_replay()` | unset, meaning live OSV; an empty value counts as unset | built |
 | `MAX_TOKENS` | `config` | 16000 | built; *(planned)* a manifest `max_tokens` field once `llm.call` takes one, and the manifest schema refuses it until then |
 | `SDK_MAX_RETRIES` | `config` | 2 | built |
@@ -466,7 +480,7 @@ A criterion passes only when it meets its threshold in every run.
 | read caps | `config` | 400 lines per call, 256 KB (256,000 bytes) per file, 500 list entries; skips `.git`, `node_modules`, `.venv` in any letter case; binary (NUL-holding) files refused | built |
 | OSV | `config` | `https://api.osv.dev/v1/query`, 10 s timeout per connect, read or write (not a total deadline); ecosystems PyPI and npm; ranges ECOSYSTEM and SEMVER; summaries up to 300 characters | built |
 | recognised dependency files | `config.DEPENDENCY_FILES` | PyPI: `requirements*.txt`, `pyproject.toml`, `Pipfile` (manifests); `Pipfile.lock`, `poetry.lock`, `uv.lock` (lockfiles). npm: `package.json` (manifest); `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` (lockfiles). Names match case-sensitively. | built |
-| substance ratings | `manifests/substance.json`, or `--substance FILE` | the shipped ratings | file and loader built; `--substance` planned |
+| substance ratings | `manifests/substance.json`, or `--substance FILE` | the shipped ratings | built |
 | guardrails | `config` | `DISPATCH_ERROR_MAX_DETAILS` 20, `DISPATCH_ERROR_TEXT_MAX_CHARS` 300, `REDACT_KEEP_CHARS` 4, `ADVISORY_STEP` known_vulnerabilities | built |
 
 ## Decisions
@@ -515,7 +529,18 @@ A criterion passes only when it meets its threshold in every run.
 | Dispatch audit | `dispatch_started` and `dispatch_finished` payloads; every line of an invocation points to its `dispatch_started` line (user decision) | The audit groups each sub-agent's calls under the dispatch that caused them | Pointing to the coordinator's `llm_call` line, which `llm.call` does not return |
 | Malformed launches | A tool name outside the launch tools, or input outside a launch tool's schema, is `SCHEMA_INVALID` | Strict tool use should prevent both, and the harness checks again rather than trust it | A new error code |
 | Output files | `coordinator` writes each accepted output when it accepts it, with exclusive creation | The run directory holds every accepted output even when the run later halts, and none is rewritten | Writing them all at run end |
+| Examinations a gate looks at | The ones the final disposition names, the newest reviewed version of each step, and the latest draft (author's reading of "accepted") | A superseded version that was blocked and then re-examined clean must not hold the run, and naming an older version must not hide a block on a newer one | Every version (a gate on every fixed challenge); only the named ones (a coordinator could hide a block) |
+| Run files for a halted run | `run.json` and `summary.json` are written; `disposition.json` and `report.md` are not | `halt_reason` lives in `run.json`, and a halted run still spent money | Writing nothing for a halted run |
+| Who writes the run files | `cli` writes `disposition.json`, `run.json` and `summary.json`, and `report.md` from `report.render` | `gates` and `report` import only `audit` and `config`; the coordinator ends before the outcome is known | `coordinator` writing the disposition |
+| Redaction of coordinator text | `cli` redacts the disposition's rationales and summary and a decision's note before writing | Every artifact is redacted before it is written; these are the stored texts no sub-agent produced | Writing them as given, on the argument that the coordinator only sees redacted output |
+| Section status rule | `report` applies `FAILING_SEVERITIES` itself; a test keeps it equal to `coordinator.section_status` | `report` may import only `config` | `report` importing `coordinator`; passing statuses in |
+| Workspace before `run_started` | The workspace is opened before the first audit line | A failed extraction then leaves no run directory | Opening it after `run_started`, leaving an audit-only run |
+| Decision order | The decision record is written, then its audit line, under one lock | The record is the authority; a failed audit append leaves the run decided and is reported as an error | Audit line first (a decision-less audit line) |
+| Decision identity | `os_user` comes from the password database for the process's uid, the environment's user only when the uid has no account | The field is the identity a typed reviewer name cannot supply, and `getpass.getuser()` reads `USER` and `LOGNAME` first | `getpass.getuser()` alone |
+| Report text from models | `report` turns every `<` in model-written or operator-chosen text into `&lt;`, redaction markers included; a line that would open a code fence gets a backslash before its first marker, and CR line breaks are read as line breaks (verified against the commonmark and markdown-it parsers, not in the suite); markdown links and images in the writer's prose are not changed, and `<` inside code spans and fences shows as `&lt;` | A raw comment or tag could hide a heading or forge a status. Citations such as `[SEC-1]` need the brackets, so link and image syntax cannot be escaped without a check in `guardrails` | Rejecting such prose in `guardrails` (a writer-contract change, not decided) |
+| Runs directory and the input | `assess run` refuses a directory input that holds the runs directory | The run would write into the client's tree and a later run would read earlier runs as client files | Skipping `runs/` in the workspace walk |
+| A zip's extracted copy | `workspace/` keeps the client's files as the zip held them, secrets included; every file the tool writes is redacted | The copy is the input, not output, and the zip run reads it in place | Deleting `workspace/` at run end (the sample runs are copied without it) |
 
 ## Open questions
 
-- **Payloads for the remaining events.** `run_started`, `gate_opened`, `run_finished` and `decision_recorded` allow only the envelope. PROPOSED: each gets a strict `$defs` payload, added with the code that first emits it.
+None.

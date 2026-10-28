@@ -67,6 +67,20 @@ HALT_REASONS = (
 ADVISORY_STEP = "known_vulnerabilities"
 REDACT_KEEP_CHARS = 4
 
+RUN_STATUSES = ("finalized", "pending_human", "halted")
+RUN_EXIT_CODES = {"finalized": 0, "halted": 1, "pending_human": 3}
+GATES = ("SUBSTANCE_ELEVATION", "OPEN_CRITICAL_CHALLENGE", "COORDINATOR_ESCALATION")
+HUMAN_DECISIONS = ("continue", "reject")
+HUMAN_STATUSES = {"continue": "finalized_by_human", "reject": "rejected_by_human"}
+ELEVATING_PERIPHERAL_COUNT = 2
+# Report order, keyed by the writer's section key, <workflow>.<step>.
+REPORT_TITLES = {
+    "security_examiner.secrets": "Secrets exposure",
+    "security_examiner.insecure_config": "Insecure configuration",
+    "dependency_examiner.known_vulnerabilities": "Known vulnerable dependencies",
+    "dependency_examiner.dependency_hygiene": "Dependency hygiene",
+}
+
 MAX_TOKENS = 16000
 SDK_MAX_RETRIES = 2
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -75,6 +89,9 @@ PRICE_FIELDS = ("input", "output", "cache_write", "cache_read")
 
 WORKSPACE_DIR = "workspace"
 EXAMINATIONS_DIR, REVIEWS_DIR, DRAFTS_DIR = "examinations", "reviews", "drafts"
+TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+RUN_FILE, SUMMARY_FILE, DISPOSITION_FILE = "run.json", "summary.json", "disposition.json"
+REPORT_FILE, DECISIONS_FILE = "report.md", "decisions.jsonl"
 ZIP_MAX_ENTRIES = 5000
 ZIP_MAX_BYTES = 50_000_000
 READ_MAX_LINES = 400

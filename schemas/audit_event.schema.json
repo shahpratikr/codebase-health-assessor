@@ -38,7 +38,19 @@
         "else": {
           "if": {"properties": {"event": {"const": "dispatch_finished"}}},
           "then": {"$ref": "#/$defs/dispatch_finished"},
-          "else": {"$ref": "#/$defs/envelope_only"}
+          "else": {
+            "if": {"properties": {"event": {"const": "gate_opened"}}},
+            "then": {"$ref": "#/$defs/gate_opened"},
+            "else": {
+              "if": {"properties": {"event": {"const": "run_finished"}}},
+              "then": {"$ref": "#/$defs/run_finished"},
+              "else": {
+                "if": {"properties": {"event": {"const": "decision_recorded"}}},
+                "then": {"$ref": "#/$defs/decision_recorded"},
+                "else": {"$ref": "#/$defs/envelope_only"}
+              }
+            }
+          }
         }
       }
     }
@@ -103,6 +115,68 @@
       "if": {"properties": {"code": {"const": null}}},
       "then": {"properties": {"output_id": {"type": "string"}}},
       "else": {"properties": {"output_id": {"const": null}}}
+    },
+    "subject": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"},
+    "gate_opened": {
+      "$comment": "subjects are harness-assigned: examination or draft IDs, <workflow>.<step> keys or workflow names.",
+      "required": ["gate", "subjects"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "gate": {"enum": ["SUBSTANCE_ELEVATION", "OPEN_CRITICAL_CHALLENGE", "COORDINATOR_ESCALATION"]},
+        "subjects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/subject"}}
+      },
+      "additionalProperties": false
+    },
+    "run_finished": {
+      "$comment": "halt_reason is set exactly when the status is halted.",
+      "required": ["status", "halt_reason"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "status": {"enum": ["finalized", "pending_human", "halted"]},
+        "halt_reason": {
+          "enum": [
+            "COORDINATOR_TURN_LIMIT",
+            "COORDINATOR_REFUSAL",
+            "COORDINATOR_MAX_TOKENS",
+            "COORDINATOR_API_ERROR",
+            "NO_REPORT",
+            "REPORT_NOT_REVIEWED",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "if": {"properties": {"status": {"const": "halted"}}},
+      "then": {"properties": {"halt_reason": {"type": "string"}}},
+      "else": {"properties": {"halt_reason": {"const": null}}}
+    },
+    "decision_recorded": {
+      "$comment": "The note stays out of the audit; decisions.jsonl holds it.",
+      "required": ["decision", "reviewer", "gates_resolved", "report_sha256"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "decision": {"enum": ["continue", "reject"]},
+        "reviewer": {"type": "string", "minLength": 1},
+        "gates_resolved": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"enum": ["SUBSTANCE_ELEVATION", "OPEN_CRITICAL_CHALLENGE", "COORDINATOR_ESCALATION"]}
+        },
+        "report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
     },
     "tool_call": {
       "$comment": "tool is null for a name outside the sub-agent tools, so model-written text never reaches the audit.",

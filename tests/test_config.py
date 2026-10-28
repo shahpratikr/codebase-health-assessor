@@ -78,6 +78,47 @@ def test_run_closed_sets_are_the_planned_ones():
     assert set(config.FAILING_SEVERITIES) <= set(config.FINDING_SEVERITIES)
 
 
+def test_run_end_closed_sets_are_the_planned_ones():
+    assert config.RUN_STATUSES == ("finalized", "pending_human", "halted")
+    assert config.HUMAN_STATUSES == {"continue": "finalized_by_human", "reject": "rejected_by_human"}
+    assert config.GATES == ("SUBSTANCE_ELEVATION", "OPEN_CRITICAL_CHALLENGE", "COORDINATOR_ESCALATION")
+    assert config.HUMAN_DECISIONS == ("continue", "reject")
+    assert config.RUN_EXIT_CODES == {"finalized": 0, "halted": 1, "pending_human": 3}
+    assert config.ELEVATING_PERIPHERAL_COUNT == 2
+
+
+def test_every_run_status_has_an_exit_code_and_every_decision_a_status():
+    assert set(config.RUN_EXIT_CODES) == set(config.RUN_STATUSES)
+    assert tuple(config.HUMAN_STATUSES) == config.HUMAN_DECISIONS
+
+
+def test_report_titles_are_the_fixed_step_map_in_report_order():
+    assert config.REPORT_TITLES == {
+        "security_examiner.secrets": "Secrets exposure",
+        "security_examiner.insecure_config": "Insecure configuration",
+        "dependency_examiner.known_vulnerabilities": "Known vulnerable dependencies",
+        "dependency_examiner.dependency_hygiene": "Dependency hygiene",
+    }
+
+
+def test_audit_token_fields_are_the_four_counts_of_an_llm_call_line():
+    assert config.TOKEN_FIELDS == (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )
+
+
+def test_run_directory_file_names_are_the_planned_ones():
+    assert (config.RUN_FILE, config.SUMMARY_FILE, config.DISPOSITION_FILE) == (
+        "run.json",
+        "summary.json",
+        "disposition.json",
+    )
+    assert (config.REPORT_FILE, config.DECISIONS_FILE) == ("report.md", "decisions.jsonl")
+
+
 def test_load_pricing_reads_another_file(tmp_path):
     path = tmp_path / "pricing.json"
     path.write_text(json.dumps({"m": {"input": 1, "output": 2, "cache_write": 0, "cache_read": 0.5}}))

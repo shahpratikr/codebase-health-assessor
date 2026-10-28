@@ -22,9 +22,8 @@ The client who owns the repository is not a user: the tool only reads their code
 
 ## What it does
 
-Nothing works end to end yet. The command line accepts its two actions, running an assessment and recording a decision, and checks their arguments, but neither action does any work.
+The command line runs an assessment end to end and records a human decision on a run that waits for one. Running it spends API credit and needs credentials.
 
-Planned:
 - Assesses a repository given as a directory, read in place, or as a zip archive, unpacked into the run's own workspace.
 - Examines four steps in two workflows: secrets exposure and insecure configuration (security), known vulnerable dependencies and dependency hygiene (dependency).
 - Backs every finding with a file and line that exist in the repository. Output that fails the tool's checks is rejected and never reaches the report.
@@ -32,10 +31,12 @@ Planned:
 - Re-examines a challenged step with the reviewer's challenges passed on word for word.
 - Writes a report with an executive summary, one section per step marked PASS or FAIL, and a review trail giving each step's examination, review verdict and coordinator decision. A section fails when its accepted examination has a critical or high finding. Headings and statuses are computed by the tool, never written by a model.
 - Keeps the report's prose to the reviewed findings: the writer explains them and adds none of its own.
-- Replaces secret values with a redacted marker in everything it stores or shows.
+- Replaces secret values with a redacted marker in everything it writes or shows. A zip's extracted copy is the client's own files and is kept as sent.
 - Holds a run for a human when, at the end, a critical challenge is still open, the coordinator escalated a step, or the substance ratings call for it. It never finalizes past an open gate.
 - Records the human decision with the reviewer's name, the system user, a note and a fingerprint of the report it applies to, without changing the report or any earlier record.
 - Keeps a per-run audit trail under one run ID: every model call with the model requested, the model that served it, tokens, cost and latency, plus every dispatch, tool call, rejection, gate and decision, with per-agent totals. It never records message content.
+
+Planned:
 - Measures each of its five agents with an eval suite and keeps the results with the code.
 - Ships a sample client repository and two recorded runs of it: one that finalized, and one that waited for a human and was decided.
 
@@ -61,7 +62,7 @@ Planned:
 
 - Runs on macOS and Linux. Keep run records on a local disk: recording a decision relies on file locking that network filesystems do not guarantee.
 - Needs an Anthropic API key and network access to Anthropic's API and to OSV. When OSV is unreachable, the dependency examiner reports that as a limitation instead of claiming vulnerabilities.
-- A run sends the client's file contents, including any secrets in them, to Anthropic's API. Redaction covers only what the tool stores and shows, not what the model reads.
+- A run sends the client's file contents, including any secrets in them, to Anthropic's API. Redaction covers only what the tool writes and shows, not what the model reads or a zip's extracted copy.
 - Every run, and every eval run, spends API credit. Each call's cost is recorded. When a fallback model with no known price serves a call, its cost is recorded as unknown, so totals can be incomplete.
 - Findings come from a language model. An examiner can miss an issue or misjudge its severity. The eval suites measure how often, and a PASS section is not proof the issue is absent.
 - Some files are not read: binary files, files over the size cap (large dependency lockfiles among them), the git folder and installed-dependency folders. Archives over the entry or size cap are refused. Values: see ARCHITECTURE.md, Configuration.

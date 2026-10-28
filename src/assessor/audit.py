@@ -1,7 +1,7 @@
 import json
 import os
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +24,21 @@ def _as_utc(moment: datetime) -> datetime:
     if moment.utcoffset() is None:
         raise ValueError("audit timestamps must be timezone-aware")
     return moment.astimezone(UTC)
+
+
+def timestamp(moment: datetime) -> str:
+    """Return moment as a UTC audit timestamp, YYYY-MM-DDTHH:MM:SS.mmmZ; raises ValueError for a naive datetime."""
+    utc = _as_utc(moment)
+    return f"{utc:%Y-%m-%dT%H:%M:%S}.{utc.microsecond // 1000:03d}Z"
+
+
+def _totals(calls: Sequence[Mapping]) -> dict:
+    return {
+        "llm_calls": len(calls),
+        **{field: sum(call[field] for call in calls) for field in config.TOKEN_FIELDS},
+        "cost_usd": round(sum(call["cost_usd"] for call in calls if call["cost_usd"] is not None), 6),
+        "unpriced_calls": sum(call["pricing_missing"] for call in calls),
+    }
 
 
 def new_correlation_id(now: datetime | None = None) -> str:
@@ -83,13 +98,13 @@ class AuditLog:
             raise ValueError(f"audit fields cannot override the envelope: {', '.join(clash)}")
         if self._seq is None:
             self._seq, self._torn = self._scan()
-        moment = _as_utc(self._clock())
+        ts = timestamp(self._clock())
         seq = self._seq + 1
         record = {
             "correlation_id": self.correlation_id,
             "seq": seq,
             "step_id": f"{self.correlation_id}:{seq}",
-            "ts": f"{moment:%Y-%m-%dT%H:%M:%S}.{moment.microsecond // 1000:03d}Z",
+            "ts": ts,
             "event": event,
             **fields,
         }
@@ -114,3 +129,26 @@ class AuditLog:
             raise
         self._seq, self._torn = record["seq"], False
         return record
+
+    def summary(self) -> dict:
+        """Return the totals of the log's llm_call lines for each agent, in the order each first appears, and overall.
+
+        Reads only: a line that is not a valid audit record, a torn last line included, is skipped.
+        """
+        calls: dict[str, list[dict]] = {}
+        try:
+            with open(self.path, encoding="utf-8", errors="replace") as log:
+                for line in log:
+                    try:
+                        record = json.loads(line)
+                    except (ValueError, RecursionError):
+                        continue
+                    if _VALIDATOR.is_valid(record) and record["event"] == "llm_call":
+                        calls.setdefault(record["agent"], []).append(record)
+        except FileNotFoundError:
+            pass
+        return {
+            "correlation_id": self.correlation_id,
+            "agents": {agent: _totals(agent_calls) for agent, agent_calls in calls.items()},
+            "total": _totals([call for agent_calls in calls.values() for call in agent_calls]),
+        }

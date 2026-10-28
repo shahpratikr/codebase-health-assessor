@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from assessor import cli
+from assessor import cli, config
 from assessor.cli import build_parser, main
 
 CID = "20261027T101500Z-0a1b2c3d"
@@ -105,6 +105,11 @@ def test_reviewer_without_letter_or_digit_exits_2(capsys, reviewer):
     assert "argument --reviewer: must contain a letter or digit" in capsys.readouterr().err
 
 
+def test_decision_choices_are_the_closed_set():
+    (subcommands,) = [action for action in build_parser()._actions if action.dest == "command"]
+    assert subcommands.choices["decide"]._option_string_actions["--decision"].choices == config.HUMAN_DECISIONS
+
+
 def test_run_parses_path_and_substance():
     args = build_parser().parse_args(["run", "client.zip", "--substance", "ratings.json"])
     assert (args.command, args.path, args.substance) == ("run", "client.zip", "ratings.json")
@@ -121,15 +126,6 @@ def test_decide_parses_all_fields():
     unnoted = build_parser().parse_args(["decide", CID, "--decision", "continue", "--reviewer", " 李明 "])
     assert (unnoted.reviewer, unnoted.note) == (" 李明 ", None)
     assert build_parser().parse_args(["decide", CID, "--decision", "continue", "--reviewer", "42"]).reviewer == "42"
-
-
-@pytest.mark.parametrize("command", ["run", "decide"])
-def test_valid_command_reports_not_implemented_yet(capsys, tmp_path, command):
-    argv = {"run": ["run", str(tmp_path)], "decide": ["decide", CID, "--decision", "continue", "--reviewer", "ana"]}
-    assert main(argv[command]) == 1
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == f"assess {command}: not implemented yet\n"
 
 
 def test_main_reads_sys_argv_by_default(capsys, monkeypatch):
