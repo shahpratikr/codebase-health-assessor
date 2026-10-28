@@ -49,7 +49,22 @@ GUARDRAIL_REJECTED = {
     "code": "SCHEMA_INVALID",
     "problems": 2,
 }
-PAYLOADS = {"llm_call": LLM_CALL, "tool_call": TOOL_CALL, "guardrail_rejected": GUARDRAIL_REJECTED}
+DISPATCH_STARTED = {"agent": "security_examiner", "workflow": "security_examiner", "step": "secrets", "target_id": None}
+DISPATCH_FINISHED = {
+    "parent_step_id": f"{CID}:3",
+    "agent": "security_examiner",
+    "workflow": "security_examiner",
+    "step": "secrets",
+    "output_id": "EX-SEC-v1",
+    "code": None,
+}
+PAYLOADS = {
+    "llm_call": LLM_CALL,
+    "tool_call": TOOL_CALL,
+    "guardrail_rejected": GUARDRAIL_REJECTED,
+    "dispatch_started": DISPATCH_STARTED,
+    "dispatch_finished": DISPATCH_FINISHED,
+}
 
 
 def _log(tmp_path, clock=lambda: NOW):
@@ -85,7 +100,7 @@ def test_append_writes_envelope_and_fields_and_returns_the_record(tmp_path):
 def test_seq_and_step_id_increase_per_line(tmp_path):
     log = _log(tmp_path)
     for event in ("run_started", "dispatch_started", "llm_call"):
-        log.append(event, **(LLM_CALL if event == "llm_call" else {}))
+        log.append(event, **PAYLOADS.get(event, {}))
     assert [(line["seq"], line["step_id"]) for line in _lines(tmp_path)] == [
         (1, f"{CID}:1"),
         (2, f"{CID}:2"),
@@ -244,10 +259,73 @@ def test_guardrail_rejected_payload_refuses_bad_or_extra_fields(tmp_path, fields
     assert not (tmp_path / CID).exists()
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**DISPATCH_STARTED, "agent": "adversarial_reviewer", "target_id": "EX-SEC-v1"},
+        {**DISPATCH_STARTED, "agent": "adversarial_reviewer", "target_id": "DR-v12"},
+        {**DISPATCH_STARTED, "agent": "final_review_writer", "workflow": "final_review_writer", "step": None},
+    ],
+)
+def test_dispatch_started_payload_is_accepted(tmp_path, fields):
+    assert _log(tmp_path).append("dispatch_started", **fields)["agent"] == fields["agent"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**DISPATCH_STARTED, "target_id": "RV-1"},
+        {**DISPATCH_STARTED, "target_id": "EX-SEC-v0"},
+        {**DISPATCH_STARTED, "target_id": "ex-sec-v1"},
+        {**DISPATCH_STARTED, "target_id": "../x"},
+        {**DISPATCH_STARTED, "agent": "Security Examiner"},
+        {**DISPATCH_STARTED, "parent_step_id": None},
+        {**DISPATCH_STARTED, "task": {"note": "Re-check."}},
+        {key: value for key, value in DISPATCH_STARTED.items() if key != "target_id"},
+    ],
+)
+def test_dispatch_started_payload_refuses_bad_or_extra_fields(tmp_path, fields):
+    with pytest.raises(jsonschema.ValidationError):
+        _log(tmp_path).append("dispatch_started", **fields)
+    assert not (tmp_path / CID).exists()
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**DISPATCH_FINISHED, "output_id": "RV-12"},
+        {**DISPATCH_FINISHED, "output_id": "DR-v3", "workflow": "final_review_writer", "step": None},
+        {**DISPATCH_FINISHED, "output_id": None, "code": "SCHEMA_INVALID"},
+    ],
+)
+def test_dispatch_finished_payload_is_accepted(tmp_path, fields):
+    assert _log(tmp_path).append("dispatch_finished", **fields)["output_id"] == fields["output_id"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {**DISPATCH_FINISHED, "output_id": None},
+        {**DISPATCH_FINISHED, "code": "API_ERROR"},
+        {**DISPATCH_FINISHED, "output_id": None, "code": "NOT_A_CODE"},
+        {**DISPATCH_FINISHED, "output_id": "EX-SEC-v0"},
+        {**DISPATCH_FINISHED, "output_id": "RV-1-C1"},
+        {**DISPATCH_FINISHED, "parent_step_id": None},
+        {**DISPATCH_FINISHED, "content": "AKIAIOSFODNN7EXAMPLE"},
+        {key: value for key, value in DISPATCH_FINISHED.items() if key != "code"},
+    ],
+)
+def test_dispatch_finished_payload_refuses_bad_or_extra_fields(tmp_path, fields):
+    with pytest.raises(jsonschema.ValidationError):
+        _log(tmp_path).append("dispatch_finished", **fields)
+    assert not (tmp_path / CID).exists()
+
+
 def test_payload_enums_match_config():
     definitions = SCHEMA["$defs"]
     assert definitions["tool_call"]["properties"]["tool"]["enum"] == [*config.SUBAGENT_TOOLS, None]
     assert definitions["guardrail_rejected"]["properties"]["code"]["enum"] == list(config.DISPATCH_ERROR_CODES)
+    assert definitions["dispatch_finished"]["properties"]["code"]["enum"] == [*config.DISPATCH_ERROR_CODES, None]
 
 
 def test_check_validates_without_writing(tmp_path):
@@ -305,7 +383,7 @@ def test_partial_write_leaves_the_next_line_whole(tmp_path, monkeypatch):
     log.append("run_started")
     monkeypatch.setattr(audit, "open", open_tearing_once, raising=False)
     with pytest.raises(OSError, match="No space left"):
-        log.append("dispatch_started")
+        log.append("dispatch_started", **DISPATCH_STARTED)
     log.append("run_finished")
     raw = (tmp_path / CID / "audit.jsonl").read_text().splitlines()
     assert len(raw) == 3

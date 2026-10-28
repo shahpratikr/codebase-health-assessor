@@ -36,7 +36,8 @@ DISPATCH_ERROR_CODES = (
     "TOOL_LOOP_LIMIT",
     *LLM_ERROR_CODES,
 )
-# Sending the same dispatch again can succeed after these; the others need a different dispatch.
+# An agent's output that failed with one of these can pass when the same dispatch is sent again. A launch the
+# coordinator refuses on its own checks passes only once it is fixed or what it waits for exists, whatever its code.
 RETRYABLE_DISPATCH_ERRORS = ("SCHEMA_INVALID", "EVIDENCE_INVALID", "TOOL_LOOP_LIMIT", "MAX_TOKENS", "API_ERROR")
 DISPATCH_ERROR_MAX_DETAILS = 20
 DISPATCH_ERROR_TEXT_MAX_CHARS = 300
@@ -53,6 +54,16 @@ REVIEW_VERDICTS = ("pass", "challenge", "block")
 LENSES = ("challenge", "catch", "detect")
 CHALLENGE_SEVERITIES = ("critical", "major", "minor")
 DISPOSITION_DECISIONS = ("accept", "escalate")
+SECTION_STATUSES = ("PASS", "FAIL")
+FAILING_SEVERITIES = ("critical", "high")
+HALT_REASONS = (
+    "COORDINATOR_TURN_LIMIT",
+    "COORDINATOR_REFUSAL",
+    "COORDINATOR_MAX_TOKENS",
+    "COORDINATOR_API_ERROR",
+    "NO_REPORT",
+    "REPORT_NOT_REVIEWED",
+)
 ADVISORY_STEP = "known_vulnerabilities"
 REDACT_KEEP_CHARS = 4
 
@@ -63,6 +74,7 @@ FALLBACKS = "default"
 PRICE_FIELDS = ("input", "output", "cache_write", "cache_read")
 
 WORKSPACE_DIR = "workspace"
+EXAMINATIONS_DIR, REVIEWS_DIR, DRAFTS_DIR = "examinations", "reviews", "drafts"
 ZIP_MAX_ENTRIES = 5000
 ZIP_MAX_BYTES = 50_000_000
 READ_MAX_LINES = 400

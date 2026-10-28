@@ -32,7 +32,15 @@
     "else": {
       "if": {"properties": {"event": {"const": "guardrail_rejected"}}},
       "then": {"$ref": "#/$defs/guardrail_rejected"},
-      "else": {"$ref": "#/$defs/envelope_only"}
+      "else": {
+        "if": {"properties": {"event": {"const": "dispatch_started"}}},
+        "then": {"$ref": "#/$defs/dispatch_started"},
+        "else": {
+          "if": {"properties": {"event": {"const": "dispatch_finished"}}},
+          "then": {"$ref": "#/$defs/dispatch_finished"},
+          "else": {"$ref": "#/$defs/envelope_only"}
+        }
+      }
     }
   },
   "$defs": {
@@ -44,6 +52,58 @@
     "label": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$"},
     "optional_label": {"anyOf": [{"$ref": "#/$defs/label"}, {"type": "null"}]},
     "parent_step_id": {"anyOf": [{"$ref": "#/properties/step_id"}, {"type": "null"}]},
+    "target_id": {"type": "string", "pattern": "^(EX-[A-Z]{2,8}-v[1-9][0-9]*|DR-v[1-9][0-9]*)$"},
+    "output_id": {"type": "string", "pattern": "^(EX-[A-Z]{2,8}-v[1-9][0-9]*|RV-[1-9][0-9]*|DR-v[1-9][0-9]*)$"},
+    "dispatch_started": {
+      "$comment": "Every line of the invocation carries this line's step_id as its parent_step_id.",
+      "required": ["agent", "workflow", "step", "target_id"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "agent": {"$ref": "#/$defs/label"},
+        "workflow": {"$ref": "#/$defs/optional_label"},
+        "step": {"$ref": "#/$defs/optional_label"},
+        "target_id": {"anyOf": [{"$ref": "#/$defs/target_id"}, {"type": "null"}]}
+      },
+      "additionalProperties": false
+    },
+    "dispatch_finished": {
+      "$comment": "output_id names the accepted output; code is the DispatchError of a dispatch that produced none.",
+      "required": ["parent_step_id", "agent", "workflow", "step", "output_id", "code"],
+      "properties": {
+        "correlation_id": true,
+        "seq": true,
+        "step_id": true,
+        "ts": true,
+        "event": true,
+        "parent_step_id": {"$ref": "#/properties/step_id"},
+        "agent": {"$ref": "#/$defs/label"},
+        "workflow": {"$ref": "#/$defs/optional_label"},
+        "step": {"$ref": "#/$defs/optional_label"},
+        "output_id": {"anyOf": [{"$ref": "#/$defs/output_id"}, {"type": "null"}]},
+        "code": {
+          "enum": [
+            "SCHEMA_INVALID",
+            "EVIDENCE_INVALID",
+            "PRECONDITION_FAILED",
+            "UNKNOWN_TARGET",
+            "RETRY_CAP_REACHED",
+            "TOOL_LOOP_LIMIT",
+            "REFUSAL",
+            "MAX_TOKENS",
+            "API_ERROR",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "if": {"properties": {"code": {"const": null}}},
+      "then": {"properties": {"output_id": {"type": "string"}}},
+      "else": {"properties": {"output_id": {"const": null}}}
+    },
     "tool_call": {
       "$comment": "tool is null for a name outside the sub-agent tools, so model-written text never reaches the audit.",
       "required": ["parent_step_id", "agent", "workflow", "step", "tool", "allowed", "is_error"],

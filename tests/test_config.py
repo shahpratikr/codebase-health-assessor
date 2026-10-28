@@ -62,6 +62,22 @@ def test_agent_closed_sets_are_the_planned_ones():
     assert config.SUBSTANCE_RATINGS == ("core", "peripheral", "toy")
 
 
+def test_run_closed_sets_are_the_planned_ones():
+    assert config.HALT_REASONS == (
+        "COORDINATOR_TURN_LIMIT",
+        "COORDINATOR_REFUSAL",
+        "COORDINATOR_MAX_TOKENS",
+        "COORDINATOR_API_ERROR",
+        "NO_REPORT",
+        "REPORT_NOT_REVIEWED",
+    )
+    assert (config.EXAMINATIONS_DIR, config.REVIEWS_DIR, config.DRAFTS_DIR) == ("examinations", "reviews", "drafts")
+    assert {f"COORDINATOR_{code}" for code in config.LLM_ERROR_CODES} <= set(config.HALT_REASONS)
+    assert config.SECTION_STATUSES == ("PASS", "FAIL")
+    assert config.FAILING_SEVERITIES == ("critical", "high")
+    assert set(config.FAILING_SEVERITIES) <= set(config.FINDING_SEVERITIES)
+
+
 def test_load_pricing_reads_another_file(tmp_path):
     path = tmp_path / "pricing.json"
     path.write_text(json.dumps({"m": {"input": 1, "output": 2, "cache_write": 0, "cache_read": 0.5}}))
