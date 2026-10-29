@@ -16,7 +16,7 @@ It is a standalone tool, run from a terminal against one repository at a time. I
 |---|---|
 | Operator | A consultant who runs an assessment on a client repository, reads the run's status and open gates, and takes the report from there. |
 | Human reviewer | Reads a run that is waiting for a human and records continue or reject under their own name, with a note. |
-| Maintainer | Tunes the agents' prompts and checklists, runs the eval suites against the real API, and keeps the measured results with the code. |
+| Maintainer | Tunes the agents' prompts and checklists, runs the eval suites against the real API with a note on what changed, keeps the measured results and their history with the code, and runs the offline bypass campaign. |
 
 The client who owns the repository is not a user: the tool only reads their code.
 
@@ -36,8 +36,12 @@ The command line runs an assessment end to end and records a human decision on a
 - Records the human decision with the reviewer's name, the system user, a note and a fingerprint of the report it applies to, without changing the report or any earlier record.
 - Keeps a per-run audit trail under one run ID: every model call with the model requested, the model that served it, tokens, cost and latency, plus every dispatch, tool call, rejection, gate and decision, with per-agent totals. It never records message content.
 
+For the maintainer it also:
+- Records each eval execution in an append-only history: one line for each agent that finishes, with its scores against each threshold, fingerprints of the prompts and checklists it ran with, its cost and a one-line note on what changed. A failing execution is recorded too, so each change to a prompt can be read next to its effect.
+- Tests its own human checkpoints with an offline bypass campaign (`python -m evals.punchout`): scripted attempts to get past each gate, or to record a decision the rules refuse, run against the real gate code with no model call, no API key and no cost. It fails when a checkpoint does not hold.
+
 Planned:
-- Measures each of its five agents with an eval suite and keeps the results with the code.
+- Keeps committed measurements of each of its five agents with the code: the eval suites and their runner are built, and the results come from manual runs.
 - Ships a sample client repository and two recorded runs of it: one that finalized, and one that waited for a human and was decided.
 
 ## What it does not do
@@ -90,6 +94,8 @@ Planned:
 - **Decision**: a human reviewer's continue or reject on a run that is pending human.
 - **OSV**: Open Source Vulnerabilities, the public advisory database.
 - **Eval suite**: a set of cases for one agent, scored against named criteria with pass thresholds.
+- **Eval history**: the append-only record of eval executions, one line for each agent that finishes, with the maintainer's note.
+- **Bypass campaign**: scripted attempts to get past the human checkpoints without a human decision, run offline against the real gate code.
 
 ## Open questions
 

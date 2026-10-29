@@ -6,6 +6,7 @@ import shlex
 import pytest
 
 from assessor import cli, config
+from evals import punchout
 from evals import run as evals_run
 
 README = config.ROOT / "README.md"
@@ -28,13 +29,15 @@ HEADER = ["Item", "What it shows", "Paths"]
 INSTALL = ("poetry", "install")
 ASSESS = ("poetry", "run", "assess")
 EVALS = ("poetry", "run", "python", "-m", "evals.run")
-PROGRAMS = {ASSESS: cli.build_parser, EVALS: evals_run.build_parser}
+CAMPAIGN = ("poetry", "run", "python", "-m", "evals.punchout")
+PROGRAMS = {ASSESS: cli.build_parser, EVALS: evals_run.build_parser, CAMPAIGN: punchout.build_parser}
 FENCES = ("```", "~~~")
-# Per README: the `assess` subcommands it shows, one entry per command, and whether it shows an evals command.
+# Per README: the `assess` subcommands it shows, one entry per command, and whether it shows an evals command and a
+# bypass campaign command.
 COMMANDS = {
-    "root": (["decide", "run", "run"], True),
-    "sample-runs": (["decide", "run", "run"], False),
-    "results": ([], True),
+    "root": (["decide", "run", "run"], True, True),
+    "sample-runs": (["decide", "run", "run"], False, False),
+    "results": ([], True, True),
 }
 
 MAP = """\
@@ -229,6 +232,14 @@ def _subcommands(text):
     return sorted(argv[0] for argv in _commands(text, ASSESS) if argv and not argv[0].startswith("-"))
 
 
+def _eval_runs_without_a_note(text):
+    return [
+        shlex.join([*EVALS, *argv])
+        for argv in _commands(text, EVALS)
+        if not any(arg == "--note" or arg.startswith("--note=") for arg in argv)
+    ]
+
+
 def _refused_commands(text):
     refused = []
     for program, build in PROGRAMS.items():
@@ -287,9 +298,11 @@ def test_the_packaging_command_writes_git_log_stat_to_git_log_txt_and_adds_it_to
 @pytest.mark.parametrize("name", READMES)
 def test_each_readme_shows_the_commands_it_documents_and_they_are_valid(name):
     text = _text(READMES[name])
-    subcommands, shows_evals = COMMANDS[name]
+    subcommands, shows_evals, shows_campaign = COMMANDS[name]
     assert _subcommands(text) == subcommands
     assert bool(_commands(text, EVALS)) == shows_evals
+    assert bool(_commands(text, CAMPAIGN)) == shows_campaign
+    assert _eval_runs_without_a_note(text) == []
     assert _refused_commands(text) == []
     assert _unresolved_arguments(text) == []
 
@@ -525,6 +538,7 @@ def test_a_text_without_a_decide_or_eval_command_shows_neither():
     text = "```\npoetry run assess run examples/sample-client-repo\n```\n"
     assert _subcommands(text) == ["run"]
     assert _commands(text, EVALS) == []
+    assert _commands(text, CAMPAIGN) == []
 
 
 def test_a_command_its_parser_refuses_is_reported():
@@ -535,6 +549,10 @@ poetry run assess run examples/sample-client-repo
 poetry run assess decide <cid> --decision continue --reviewer "A B"
 poetry run python -m evals.run --agent all
 poetry run python -m evals.run --agent all --runs 3
+poetry run python -m evals.run --agent all --runs 3 --note
+poetry run python -m evals.run --agent all --runs 3 --note "<what changed>"
+poetry run python -m evals.punchout
+poetry run python -m evals.punchout --results x
 ```
 poetry run assess run
 """
@@ -542,6 +560,23 @@ poetry run assess run
         "poetry run assess run",
         "poetry run assess decide '<cid>' --decision continue --reviewer 'A B'",
         "poetry run python -m evals.run --agent all",
+        "poetry run python -m evals.run --agent all --runs 3 --note",
+        "poetry run python -m evals.punchout --results x",
+    ]
+
+
+def test_an_eval_run_shown_without_a_note_is_reported():
+    text = """\
+```
+poetry run python -m evals.run --agent all --runs 3
+poetry run python -m evals.run --agent all --runs 3 --note "baseline"
+poetry run python -m evals.run --agent all --runs 3 --note=baseline
+poetry run python -m evals.run --agent all --runs 3 --notes x
+```
+"""
+    assert _eval_runs_without_a_note(text) == [
+        "poetry run python -m evals.run --agent all --runs 3",
+        "poetry run python -m evals.run --agent all --runs 3 --notes x",
     ]
 
 

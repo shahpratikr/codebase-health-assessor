@@ -23,6 +23,7 @@ from assessor.guardrails import (
     ExaminationContext,
     ReviewContext,
     WriterContext,
+    redact,
     validate,
 )
 from assessor.llm import NoCredentialsError, make_client
@@ -35,6 +36,8 @@ CRITERIA_FILE, CASES_DIR, CASE_FILE, REPO_DIR = "criteria.json", "cases", "case.
 SCRIPT_FILE = "script.json"
 REPLAY_FILE = "osv_replay.json"
 RESULTS_DIR, AUDIT_DIR = "results", ".runs"
+HISTORY_FILE = "history.jsonl"
+NOTE_MAX_CHARS = 500
 MIN_CRITERIA = 3
 WRITER = "final_review_writer"
 # The writer's tone judge: a model call of its own, outside the manifests, so it is pinned here and its prompt hash goes
@@ -273,6 +276,9 @@ JUDGE_SCHEMA = {
     "additionalProperties": False,
 }
 _JUDGEMENT = jsonschema.Draft202012Validator(JUDGE_SCHEMA)
+_HISTORY = jsonschema.Draft202012Validator(
+    json.loads((config.SCHEMAS_DIR / "eval_history.schema.json").read_text(encoding="utf-8"))
+)
 _REPLAY = jsonschema.Draft202012Validator(
     {
         "type": "object",
@@ -974,6 +980,73 @@ def write_results(results: Mapping, path: Path) -> None:
         raise
 
 
+def history_line(eval_set: EvalSet, results: Mapping, note: str) -> dict:
+    """Return the history line of one agent's results: what they pin, each criterion's outcome with the comparison its
+    eval set gives it, and note."""
+    comparisons = {criterion["name"]: criterion["comparison"] for criterion in eval_set.criteria}
+    judge = results.get("judge")
+    return {
+        "agent": results["agent"],
+        "generated_at": results["generated_at"],
+        "runs": results["runs"],
+        "model": results["model"],
+        "effort": results["effort"],
+        "prompt_sha256": results["prompt_sha256"],
+        "skills_sha256": results["skills_sha256"],
+        "judge_prompt_sha256": judge["prompt_sha256"] if judge else None,
+        "all_passed": all(item["passed_all_runs"] for item in results["summary"]),
+        "summary": [
+            {
+                "criterion": item["criterion"],
+                "comparison": comparisons[item["criterion"]],
+                "threshold": item["threshold"],
+                "per_run_mean": item["per_run_mean"],
+                "passed_all_runs": item["passed_all_runs"],
+            }
+            for item in results["summary"]
+        ],
+        "total_cost_usd": results["total_cost_usd"],
+        "note": note,
+    }
+
+
+def append_history(line: Mapping, path: Path) -> None:
+    """Append line to the history at path as ASCII JSON, flushed and fsynced, starting a new line after a torn last
+    one; a line that eval_history.schema.json or JSON refuses raises jsonschema.ValidationError or ValueError unwritten.
+    """
+    _HISTORY.validate(line)
+    text = (json.dumps(line, allow_nan=False) + "\n").encode("ascii")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as history:
+        end = history.seek(0, os.SEEK_END)
+        if end:
+            history.seek(end - 1)
+            text = (b"" if history.read(1) == b"\n" else b"\n") + text
+        history.write(text)
+        history.flush()
+        os.fsync(history.fileno())
+
+
+def _note(text: str) -> str:
+    """Return text redacted as `assess decide` redacts a note; raises ArgumentTypeError unless text is one line and the
+    redacted note is at most NOTE_MAX_CHARS characters that encode as UTF-8.
+
+    The line count is taken before redaction, which can join the lines of a multi-line secret into one marker.
+    """
+    if text.splitlines() not in ([], [text]):
+        raise argparse.ArgumentTypeError("must be one line")
+    note = redact(text)
+    if len(note) > NOTE_MAX_CHARS:
+        raise argparse.ArgumentTypeError(
+            f"must be at most {NOTE_MAX_CHARS} characters with secrets redacted, not {len(note)}"
+        )
+    try:
+        note.encode("utf-8")
+    except UnicodeEncodeError:
+        raise argparse.ArgumentTypeError("must encode as UTF-8") from None
+    return note
+
+
 def _positive(text: str) -> int:
     try:
         value = int(text)
@@ -992,6 +1065,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--agent", required=True, choices=[*AGENTS, "all"])
     parser.add_argument("--runs", required=True, type=_positive, metavar="N", help="times to run each case")
+    parser.add_argument(
+        "--note",
+        type=_note,
+        default="",
+        metavar="TEXT",
+        help=f"what changed since the last execution, one line of at most {NOTE_MAX_CHARS} characters, kept in the "
+        "history; write --note=TEXT for a text that looks like an option, such as -x",
+    )
     return parser
 
 
@@ -1013,8 +1094,9 @@ def main(
     """Return the process exit code for argv (sys.argv when None): 0 when every criterion met its threshold in every
     run, 1 when one missed, 2 when an eval set, a manifest or the credentials are unusable (before any model call).
 
-    argparse raises SystemExit itself, 2 on a usage error; each agent's results are written as it finishes, and any
-    other error propagates without results for the agent it hit.
+    argparse raises SystemExit itself, 2 on a usage error, a refused note included. As each agent finishes, its results
+    are written and then its history line appended; any other error propagates: an agent whose run it hit gets neither,
+    and one whose append it hit keeps its results.
     """
     args = build_parser().parse_args(argv)
     names = list(AGENTS) if args.agent == "all" else [args.agent]
@@ -1030,6 +1112,7 @@ def main(
         results = run_eval_set(client, eval_set, runs=args.runs, runs_dir=evals_dir / AUDIT_DIR, clock=clock)
         path = evals_dir / RESULTS_DIR / f"{eval_set.agent}.json"
         write_results(results, path)
+        append_history(history_line(eval_set, results, args.note), evals_dir / RESULTS_DIR / HISTORY_FILE)
         every_criterion_met &= _report(eval_set, results, path)
     return 0 if every_criterion_met else 1
 

@@ -34,13 +34,16 @@ poetry run assess run examples/sample-client-repo --substance examples/substance
 # Record a human decision on a run that is waiting, using the correlation ID that assess run printed
 poetry run assess decide 20261028T101500Z-0a1b2c3d --decision continue --reviewer "Your Name" --note "Reviewed the open gate"
 
-# Run the evals for every agent, three runs each
-poetry run python -m evals.run --agent all --runs 3
+# Run the evals for every agent, three runs each, with a note on what changed since the last execution
+poetry run python -m evals.run --agent all --runs 3 --note "Tightened the reviewer prompt"
+
+# Try to get past each human checkpoint with scripted attempts; offline, no key, no cost
+poetry run python -m evals.punchout
 ```
 
 A run writes `runs/<correlation_id>/` with `audit.jsonl`, `run.json` and `summary.json`, and the `examinations/`, `reviews/` and `drafts/` it accepted. A run that does not halt also writes `disposition.json` and `report.md`, a zip input adds `workspace/`, and `decisions.jsonl` appears once someone has decided the run. `assess decide` only appends to `decisions.jsonl` and `audit.jsonl`. Exit codes and every argument are in `docs/ARCHITECTURE.md`, Interfaces.
 
-The evals write `evals/results/<agent>.json` and are described in `evals/results/README.md`. The sample client repo, the recorded sample runs and how to record them are described in `examples/sample-runs/README.md`.
+The evals write `evals/results/<agent>.json` and append one line for each agent that finishes, with the note, to `evals/results/history.jsonl`, which is never rewritten. The note is one line of at most 500 characters, counted after secrets in it are redacted; for a note that looks like an option, such as `-x`, write `--note=-x`. The bypass campaign writes `evals/results/punchout/<timestamp>-punchout.json` and exits 1 when a scenario did not hold. Both are described in `evals/results/README.md`. The sample client repo, the recorded sample runs and how to record them are described in `examples/sample-runs/README.md`.
 
 ## ZIP packaging
 

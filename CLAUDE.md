@@ -10,12 +10,13 @@
 - test (all): `poetry run pytest`
 - test (single file): `poetry run pytest tests/test_audit.py`
 - test (single test): `poetry run pytest tests/test_audit.py::test_each_line_is_flushed_then_fsynced`
-- evals (planned; real API, spends credit): `poetry run python -m evals.run --agent <name>|all --runs N`
+- evals (real API, spends credit): `poetry run python -m evals.run --agent <name>|all --runs N --note "<what changed>"`; writes `evals/results/<agent>.json` and appends a line for each agent that finishes to `evals/results/history.jsonl`
+- bypass campaign (offline, no key, no cost): `poetry run python -m evals.punchout`; writes `evals/results/punchout/<YYYYMMDDTHHMMSSZ>-punchout.json`, exits 1 when a scenario did not hold
 - package (planned): `git log --stat --date=iso > git_log.txt && git archive --format=zip -o submission.zip HEAD && zip -u submission.zip git_log.txt`
 - slow: none; the whole suite runs in about 3 s
 
 ## Testing
-- pytest, `testpaths = ["tests"]`. Everything is an offline unit test: no network, no API key. Evals *(planned)* are separate from pytest and are the only real-API runs.
+- pytest, `testpaths = ["tests"]`. Everything is an offline unit test: no network, no API key. Evals are separate from pytest and are the only real-API runs.
 - Files: `tests/test_<module or area>.py` (`test_audit.py`, `test_llm.py`, `test_config.py`).
 - Names: `test_<behaviour in words>`, e.g. `test_naive_clock_is_refused`. Never put a requirement or acceptance-criterion ID (`ac13`, `AC-13`) in a test name.
 - SDK: use the `fake_anthropic` fixture (`FakeAnthropic` in `tests/conftest.py`).
