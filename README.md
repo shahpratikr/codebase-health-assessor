@@ -39,6 +39,12 @@ poetry run python -m evals.run --agent all --runs 3 --note "Tightened the review
 
 # Try to get past each human checkpoint with scripted attempts; offline, no key, no cost
 poetry run python -m evals.punchout
+
+# Write manifest.yaml and docs/iterations.md into the ZIP that the package line made (see ZIP packaging)
+poetry run python -m submission.build submission.zip
+
+# Check that ZIP against the intake rules without extracting it
+poetry run python -m submission.validate submission.zip
 ```
 
 A run writes `runs/<correlation_id>/` with `audit.jsonl`, `run.json` and `summary.json`, and the `examinations/`, `reviews/` and `drafts/` it accepted. A run that does not halt also writes `disposition.json` and `report.md`, a zip input adds `workspace/`, and `decisions.jsonl` appears once someone has decided the run. `assess decide` only appends to `decisions.jsonl` and `audit.jsonl`. Exit codes and every argument are in `docs/ARCHITECTURE.md`, Interfaces.
@@ -47,13 +53,19 @@ The evals write `evals/results/<agent>.json` and append one line for each agent 
 
 ## ZIP packaging
 
-Commit your work first, because `git archive` packs the committed files at `HEAD` only. Then export the history and build the ZIP:
+Commit your work first, because `git archive` packs the committed files at `HEAD` only. Then run these three lines from the repository root, in this order:
 
 ```
 git log --stat --date=iso > git_log.txt && git archive --format=zip -o submission.zip HEAD && zip -u submission.zip git_log.txt
+poetry run python -m submission.build submission.zip
+poetry run python -m submission.validate submission.zip
 ```
 
-`git log --stat` writes the commit history to `git_log.txt`, and `zip -u` adds that file to the archive. Do not commit `git_log.txt`: export it again each time you package. `.gitignore` keeps `submission.zip` out of the repository. Check the result with `unzip -l submission.zip | grep git_log.txt`.
+1. The package line writes the commit history to `git_log.txt` with `git log --stat`, archives `HEAD` and adds `git_log.txt` to the archive with `zip -u`. Do not commit `git_log.txt`: export it again each time you package. `.gitignore` keeps `submission.zip` out of the repository.
+2. `submission.build` reads the ZIP's own entries and never extracts them. It writes two files into the ZIP: `docs/iterations.md`, the iteration log rendered from the ZIP's `evals/results/history.jsonl`, and `manifest.yaml`, the table of contents the intake reads, whose `agents:` section comes from the ZIP's `manifests/*.json`. Every file the manifest does not cite is listed under `not_judged` with the reason of the rule in `submission/rules.py` that classifies it. It exits 1 and lists every problem when a file matches no rule, when evidence the manifest cites is missing (the five eval results files, the history with a line for each agent, a campaign file whose `all_held` is true, exactly one finalized and one elevated sample run), or when an agent manifest, a history line or a campaign file is malformed. It exits 2 when the ZIP cannot be read or already holds `manifest.yaml` or `docs/iterations.md`. It writes a new ZIP beside the old one and renames it over it, so a refused or failed build leaves the ZIP as it was.
+3. `submission.validate` checks the ZIP against the published intake rules (`PATH`, R1 to R6, R8 and the log rule), lists every violation at once, prints each rule as PASS, FAIL or SKIPPED with the ZIP's SHA-256, and exits 0 only when nothing is violated. It mirrors the rules as published; it is not the real intake.
+
+After a failed build or validation, start again from the package line: `git archive -o` overwrites the ZIP, and `submission.build` refuses a ZIP that already holds its outputs. Before you submit, read the manifest with `unzip -p submission.zip manifest.yaml` and note the SHA-256 the validator printed.
 
 ## Evidence map
 

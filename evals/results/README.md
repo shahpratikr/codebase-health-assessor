@@ -6,6 +6,8 @@ The eval runner writes one file per LLM agent here: `coordinator.json`, `securit
 
 `punchout/` holds the bypass campaign's results, one `<YYYYMMDDTHHMMSSZ>-punchout.json` file per campaign run.
 
+When the repository is packaged (README, ZIP packaging), `python -m submission.build` renders `docs/iterations.md` into the submission ZIP from the ZIP's copy of `history.jsonl`: one table per agent with a row per line, and the first and last line's mean of each criterion side by side. That file is not committed. The build refuses a history with no line for one of the five agents, or with a line that is not a JSON object, fails `schemas/eval_history.schema.json` or names another agent, which it names by line number. It cites every campaign file in `punchout/` whose `all_held` is true as punch-out evidence and lists any other one under `not_judged` as a campaign run that did not hold; with no file that held, it refuses to build.
+
 ## Regenerating them
 
 Run this from the repository root. It calls the Anthropic API, so it needs `ANTHROPIC_API_KEY` and spends credit.

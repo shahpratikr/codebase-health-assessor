@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).parents[1] / "src"
+SUBMISSION = Path(__file__).parents[1] / "submission"
 GATEWAY = "assessor/llm.py"
 BANNED_MODULES = ("subprocess", "_posixsubprocess", "claude_agent_sdk", "pty", "asyncio.subprocess")
 OS_ALIASES = {"os", "posix", "nt"}
@@ -135,6 +136,20 @@ def test_src_has_no_process_spawning():
     scanned = [path.relative_to(SRC).as_posix() for path in _modules(SRC)]
     assert "assessor/cli.py" in scanned
     assert _violations(SRC) == []
+
+
+def test_the_submission_tools_have_no_process_spawning():
+    scanned = [path.relative_to(SUBMISSION).as_posix() for path in _modules(SUBMISSION)]
+    assert {"build.py", "validate.py", "rules.py"} <= set(scanned)
+    assert _violations(SUBMISSION) == []
+
+
+def test_detects_a_planted_violation_in_the_submission_tools(tmp_path):
+    copy = tmp_path / "submission"
+    shutil.copytree(SUBMISSION, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    (copy / "build.py").write_text((SUBMISSION / "build.py").read_text(encoding="utf-8") + "import subprocess\n")
+    lines = len((copy / "build.py").read_text(encoding="utf-8").splitlines())
+    assert _violations(copy) == [f"build.py:{lines}: subprocess"]
 
 
 @pytest.mark.parametrize(

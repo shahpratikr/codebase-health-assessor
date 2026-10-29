@@ -8,6 +8,8 @@ import pytest
 from assessor import cli, config
 from evals import punchout
 from evals import run as evals_run
+from submission import build as submission_build
+from submission import validate as submission_validate
 
 README = config.ROOT / "README.md"
 READMES = {
@@ -30,15 +32,24 @@ INSTALL = ("poetry", "install")
 ASSESS = ("poetry", "run", "assess")
 EVALS = ("poetry", "run", "python", "-m", "evals.run")
 CAMPAIGN = ("poetry", "run", "python", "-m", "evals.punchout")
-PROGRAMS = {ASSESS: cli.build_parser, EVALS: evals_run.build_parser, CAMPAIGN: punchout.build_parser}
-FENCES = ("```", "~~~")
-# Per README: the `assess` subcommands it shows, one entry per command, and whether it shows an evals command and a
-# bypass campaign command.
-COMMANDS = {
-    "root": (["decide", "run", "run"], True, True),
-    "sample-runs": (["decide", "run", "run"], False, False),
-    "results": ([], True, True),
+BUILD = ("poetry", "run", "python", "-m", "submission.build")
+VALIDATE = ("poetry", "run", "python", "-m", "submission.validate")
+PROGRAMS = {
+    ASSESS: cli.build_parser,
+    EVALS: evals_run.build_parser,
+    CAMPAIGN: punchout.build_parser,
+    BUILD: submission_build.build_parser,
+    VALIDATE: submission_validate.build_parser,
 }
+FENCES = ("```", "~~~")
+# Per README: the `assess` subcommands it shows, one entry per command, and whether it shows an evals command, a bypass
+# campaign command, a manifest build command and a ZIP validation command.
+COMMANDS = {
+    "root": (["decide", "run", "run"], True, True, True, True),
+    "sample-runs": (["decide", "run", "run"], False, False, False, False),
+    "results": ([], True, True, False, False),
+}
+PACKAGE_STEPS = ["package", "build", "validate"]
 
 MAP = """\
 # Title
@@ -213,6 +224,19 @@ def _packages(text):
     return any(_is_packaging(line) for line in lines if line.split()[:2] == ["git", "log"])
 
 
+def _packaging_steps(text):
+    """Return, in order, "package" for each fenced package line of the ZIP packaging section, and "build" or "validate"
+    for each fenced line there that runs submission.build or submission.validate on submission.zip."""
+    steps = []
+    for line in _fenced_lines("\n".join(_section(text, "ZIP packaging"))):
+        if line.split()[:2] == ["git", "log"] and _is_packaging(line):
+            steps.append("package")
+        for step, program in (("build", BUILD), ("validate", VALIDATE)):
+            if _commands(f"```\n{line}\n```", program) == [["submission.zip"]]:
+                steps.append(step)
+    return steps
+
+
 def _commands(text, program):
     """Return the arguments after `program` on each uncommented fenced line that runs it.
 
@@ -295,13 +319,43 @@ def test_the_packaging_command_writes_git_log_stat_to_git_log_txt_and_adds_it_to
     assert _packages(_text())
 
 
+def test_zip_packaging_shows_the_package_build_and_validate_lines_in_that_order():
+    assert _packaging_steps(_text()) == PACKAGE_STEPS
+
+
+PACKAGE = "git log --stat > git_log.txt && git archive -o submission.zip HEAD && zip -u submission.zip git_log.txt"
+BUILD_LINE = "poetry run python -m submission.build submission.zip"
+VALIDATE_LINE = "poetry run python -m submission.validate submission.zip"
+
+
+@pytest.mark.parametrize(
+    ("lines", "steps"),
+    [
+        ([PACKAGE, BUILD_LINE, VALIDATE_LINE], PACKAGE_STEPS),
+        ([PACKAGE, "# a comment", f"$ {BUILD_LINE}", f"env -u VIRTUAL_ENV {VALIDATE_LINE}"], PACKAGE_STEPS),
+        ([PACKAGE, VALIDATE_LINE, BUILD_LINE], ["package", "validate", "build"]),
+        ([BUILD_LINE, PACKAGE, VALIDATE_LINE], ["build", "package", "validate"]),
+        ([PACKAGE, VALIDATE_LINE], ["package", "validate"]),
+        ([PACKAGE, f"# {BUILD_LINE}", VALIDATE_LINE], ["package", "validate"]),
+        ([PACKAGE, BUILD_LINE.replace("submission.zip", "other.zip"), VALIDATE_LINE], ["package", "validate"]),
+        ([PACKAGE, f"{BUILD_LINE} extra", VALIDATE_LINE], ["package", "validate"]),
+        ([PACKAGE, BUILD_LINE, BUILD_LINE, VALIDATE_LINE], ["package", "build", "build", "validate"]),
+    ],
+    ids=["in order", "prefixes", "swapped", "build first", "no build", "commented", "other zip", "extra", "twice"],
+)
+def test_the_packaging_steps_are_read_in_the_order_the_section_shows_them(lines, steps):
+    assert _packaging_steps("## ZIP packaging\n```\n" + "\n".join(lines) + "\n```\n") == steps
+
+
 @pytest.mark.parametrize("name", READMES)
 def test_each_readme_shows_the_commands_it_documents_and_they_are_valid(name):
     text = _text(READMES[name])
-    subcommands, shows_evals, shows_campaign = COMMANDS[name]
+    subcommands, shows_evals, shows_campaign, shows_build, shows_validate = COMMANDS[name]
     assert _subcommands(text) == subcommands
     assert bool(_commands(text, EVALS)) == shows_evals
     assert bool(_commands(text, CAMPAIGN)) == shows_campaign
+    assert bool(_commands(text, BUILD)) == shows_build
+    assert bool(_commands(text, VALIDATE)) == shows_validate
     assert _eval_runs_without_a_note(text) == []
     assert _refused_commands(text) == []
     assert _unresolved_arguments(text) == []
@@ -539,6 +593,8 @@ def test_a_text_without_a_decide_or_eval_command_shows_neither():
     assert _subcommands(text) == ["run"]
     assert _commands(text, EVALS) == []
     assert _commands(text, CAMPAIGN) == []
+    assert _commands(text, BUILD) == []
+    assert _commands(text, VALIDATE) == []
 
 
 def test_a_command_its_parser_refuses_is_reported():
@@ -553,6 +609,10 @@ poetry run python -m evals.run --agent all --runs 3 --note
 poetry run python -m evals.run --agent all --runs 3 --note "<what changed>"
 poetry run python -m evals.punchout
 poetry run python -m evals.punchout --results x
+poetry run python -m submission.build
+poetry run python -m submission.build submission.zip
+poetry run python -m submission.validate submission.zip
+poetry run python -m submission.validate a.zip b.zip
 ```
 poetry run assess run
 """
@@ -562,6 +622,8 @@ poetry run assess run
         "poetry run python -m evals.run --agent all",
         "poetry run python -m evals.run --agent all --runs 3 --note",
         "poetry run python -m evals.punchout --results x",
+        "poetry run python -m submission.build",
+        "poetry run python -m submission.validate a.zip b.zip",
     ]
 
 

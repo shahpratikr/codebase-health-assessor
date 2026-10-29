@@ -12,7 +12,10 @@
 - test (single test): `poetry run pytest tests/test_audit.py::test_each_line_is_flushed_then_fsynced`
 - evals (real API, spends credit): `poetry run python -m evals.run --agent <name>|all --runs N --note "<what changed>"`; writes `evals/results/<agent>.json` and appends a line for each agent that finishes to `evals/results/history.jsonl`
 - bypass campaign (offline, no key, no cost): `poetry run python -m evals.punchout`; writes `evals/results/punchout/<YYYYMMDDTHHMMSSZ>-punchout.json`, exits 1 when a scenario did not hold
-- package (planned): `git log --stat --date=iso > git_log.txt && git archive --format=zip -o submission.zip HEAD && zip -u submission.zip git_log.txt`
+- package, in this order (README.md, ZIP packaging):
+  1. `git log --stat --date=iso > git_log.txt && git archive --format=zip -o submission.zip HEAD && zip -u submission.zip git_log.txt`
+  2. `poetry run python -m submission.build submission.zip`: writes `manifest.yaml` and `docs/iterations.md` into the ZIP; exits 1 listing every problem, 2 when the ZIP is unreadable or already holds either file
+  3. `poetry run python -m submission.validate submission.zip`: exits 1 when an intake rule is violated
 - slow: none; the whole suite runs in about 3 s
 
 ## Testing
@@ -29,7 +32,7 @@
 - I/O failures: monkeypatch module attributes, e.g. `audit.os.fsync` or `audit.open`.
 - Case tables use pytest's `parametrize` mark.
 - Every static or structural check needs a planted-violation case that makes it fail. See the `src_copy` fixture and `test_detects_planted_violation` in `tests/test_no_cli_runtime.py:128` and `:207`.
-- `tests/test_gitignore.py` shells out to `git` and is skipped when git is missing.
+- `tests/test_gitignore.py` and `tests/test_submission_build.py` shell out to `git` and are skipped when git is missing, and the build tests also when the checkout is no git work tree. The build tests archive what `git ls-files -co --exclude-standard` lists, with stubs in place of the evidence manual runs commit, so an untracked file that no `submission/rules.py` rule classifies fails them.
 - Known baseline failures: none (394 passed).
 
 ## Conventions
@@ -37,7 +40,7 @@
 - Docstrings are one-line contracts starting "Return …" that name what is raised, not a restatement of the body (`config.py:41`, `audit.py:30`, `llm.py:42`).
 - Comments only for a non-obvious why (`config.py:12`, `llm.py:9`, `tests/conftest.py:39`).
 - Types: `X | None` and `collections.abc` types (`config.py:5`, `audit.py:4`, `llm.py:2`).
-- Constants and closed sets are UPPER_CASE tuples in `config.py`, referenced as `config.X` (`config.py:15`, `config.py:27`, `audit.py:47`).
+- Constants and closed sets are UPPER_CASE tuples in `config.py`, referenced as `config.X` (`config.py:15`, `config.py:27`, `audit.py:47`). The submission tools keep their closed sets in `submission/rules.py`.
 - Environment variables are read only in `config.py`, at call time (`config.runs_dir()`, `config.py:36`).
 - Bad input raises `ValueError` with a message that names the source and the bad value (`config.py:52`, `audit.py:25`, `audit.py:48`).
 - A typed error carries a `code` from a closed set in `config` and rejects unknown codes in `__init__` (`LLMError`, `llm.py:31`). DispatchError *(planned)* extends `config.LLM_ERROR_CODES` rather than repeating them.
@@ -47,6 +50,7 @@
   - code: `src/assessor/<module>.py`; tools under `src/assessor/tools/`; the sub-agent runner under `src/assessor/agents/`
   - JSON Schemas: `schemas/<contract>.schema.json`, Draft 2020-12, loaded through `config.SCHEMAS_DIR` (`audit.py:15`)
   - repo data files: `config/`
+  - packaging tools: `submission/<tool>.py`, run as `python -m submission.<tool>`; a file the package line ships needs a rule in `submission/rules.py` `CLASSIFICATION`, or the build fails
   - *(planned)* `manifests/<agent>.json`, `prompts/<agent>.md`, `skills/<name>.md`, `evals/<agent>/cases/<case_id>/{case.json, repo/…}`
 
 ## Invariants
@@ -55,9 +59,10 @@
   - `cli` imports `llm` only for `make_client` and `NoCredentialsError`.
   - `tools` never import `llm`.
   - `assessor` never imports `evals`.
+  - `submission` imports from `assessor` only `config` and the constant `manifest.COORDINATOR`, never `evals`; nothing imports `submission`.
 
   Enforced in part: only `llm.py` imports `anthropic` (`tests/test_no_cli_runtime.py::test_only_the_gateway_imports_anthropic`). The rest is not enforced.
-- **No process spawning in `src/`:** no `subprocess`, `pty`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `os.posix_spawn*`, asyncio subprocesses or `claude_agent_sdk`. `tests/` and `evals/` may shell out. (`test_src_has_no_process_spawning`)
+- **No process spawning in `src/` or `submission/`:** no `subprocess`, `pty`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `os.posix_spawn*`, asyncio subprocesses or `claude_agent_sdk`. `tests/` and `evals/` may shell out. (`test_src_has_no_process_spawning`, `test_the_submission_tools_have_no_process_spawning`)
 - **Every Messages API request goes through `llm.call`.**
   - It sends the fallback beta and `fallbacks` (`test_request_sends_default_fallbacks_and_beta`).
   - It never sends sampling parameters, `thinking` or a forced `tool_choice` (`test_gateway_has_no_parameter_for_banned_request_fields`, `test_request_has_only_gateway_keys`).
@@ -67,7 +72,11 @@
   - Lines never hold message content, prompts, tool inputs or headers. The schema's `additionalProperties: false` enforces this.
 - **`audit.jsonl` is append-only, flushed and fsynced per line** (`test_each_line_is_flushed_then_fsynced`). Timestamps are timezone-aware UTC (`test_naive_clock_is_refused`).
 - **A correlation ID that names a path must fullmatch `config.CORRELATION_ID`** (`test_malformed_correlation_id_is_refused`; argparse in `cli.py`).
-- **Each closed set is defined once, in `config`.** Enforced in part (`test_audit_events_are_the_planned_closed_set`, `test_llm_error_codes_are_the_closed_set`).
+- **Each closed set is defined once, in `config`** (the submission tools' in `submission/rules.py`). Enforced in part (`test_audit_events_are_the_planned_closed_set`, `test_llm_error_codes_are_the_closed_set`; `test_the_submission_maps_match_config_and_the_eval_runner` keeps the role map, the punch-out map and the agent names equal to `config.AGENT_ROLES`, `config.GATES` and `evals.run.AGENTS`).
+- **`evals/results/history.jsonl` is append-only, and every line passes `schemas/eval_history.schema.json` before it is written** (`tests/test_eval_history.py`).
+- **`manifest.yaml` is derived from the ZIP it goes into, never hand-written.** Its `agents:` come from the ZIP's `manifests/*.json` (`test_the_agents_section_matches_the_runtime_manifests`, `test_agents_and_steps_follow_the_zips_manifests_not_the_checkouts`).
+- **No ZIP path is excluded silently:** the build fails on a file that no rule in `submission/rules.py` classifies (`test_every_unclassified_path_is_listed_and_fails_the_build`).
+- **`submission.build` and `submission.validate` never extract a ZIP** (`test_the_builder_never_extracts`, `test_the_validator_never_extracts_and_writes_nothing`).
 - **`config/pricing.json` matches Anthropic's live pricing page.** Change it and `test_shipped_pricing_has_the_verified_prices` together, only from that page.
 - *(planned)* The coordinator manifest holds only `launch_*` tools, each mapped to a sub-agent, and the loader fails closed (`tests/test_manifest.py`, `tests/test_coordinator_dispatch_only.py`).
 - *(planned)* Every sub-agent invocation starts a new message list, and no message list is shared (`tests/test_isolation.py`).
@@ -81,7 +90,7 @@
 - *(planned)* Every path in the README evidence map exists (`tests/test_readme_evidence_map.py`).
 
 ## Constraints
-- Never commit `.env`, `runs/`, `evals/.runs/`, `dist/` or `submission.zip` (`.gitignore`; `tests/test_gitignore.py::test_generated_and_local_secret_paths_are_ignored`).
+- Never commit `.env`, `runs/`, `evals/.runs/`, `dist/` or `submission.zip` (`.gitignore`; `tests/test_gitignore.py::test_generated_and_local_secret_paths_are_ignored`). Never commit `git_log.txt`, `docs/iterations.md` or `manifest.yaml` either: packaging writes them into the ZIP, and `submission.build` refuses a ZIP that already holds the last two.
 - Never write a real credential anywhere. `ANTHROPIC_API_KEY` comes only from the environment. Fixture secrets use AWS's documented example keys (`AKIAIOSFODNN7EXAMPLE`) or obviously fake values.
 - Never run `assess run` or the evals against the real API unless the user asks: each run spends API credit.
 - Never hand-edit `poetry.lock`; change dependencies through poetry.
@@ -99,4 +108,5 @@
   - `coordinator.py`, `agents/runner.py`, `tools/`, `sandbox.py`, `guardrails.py` → Key flows (`assess run`), Interfaces (Coordinator tools, Output contracts)
   - `gates.py`, `report.py` → Key flows (`assess decide`), Interfaces (`report.md`, `decisions.jsonl` record), Data and state (Run directory)
   - `evals/` → Key flows (Eval run), Interfaces (Evals)
+  - `submission/` → Key flows (Packaging), Interfaces (Submission tools), Data and state (Closed sets)
   - a dependency → Runtime and dependencies, Decisions

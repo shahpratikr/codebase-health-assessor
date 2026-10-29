@@ -23,7 +23,7 @@ Each `assess` command runs as one short-lived local process. There is no server,
  └──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision. `evals` is built for all five LLM agents: `run.py` (with the append-only `history.jsonl`), `scoring.py`, `scripted_dispatcher.py`, `judges/tone.md` and each agent's set, and so is `punchout.py`, the offline bypass campaign. The README (setup, commands, packaging and the evidence map) and `examples/` (the sample client repo and `substance-toy.json`) are built. The committed eval results with their history, the committed campaign results and the recorded sample runs are not: they come from manual runs, and all but the campaign spend API credit.
+Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads the manifests at run start), `sandbox`, `tools` with the OSV transport, `guardrails` (not drawn; `agents.runner`, `coordinator` and `cli` call it), `agents.runner`, `coordinator`, `gates` and `report`. `cli` wires a run and a decision. `evals` is built for all five LLM agents: `run.py` (with the append-only `history.jsonl`), `scoring.py`, `scripted_dispatcher.py`, `judges/tone.md` and each agent's set, and so is `punchout.py`, the offline bypass campaign. `submission` (the manifest builder `submission.build` and the ZIP validator `submission.validate`) is built. The README (setup, commands, packaging and the evidence map) and `examples/` (the sample client repo and `substance-toy.json`) are built. The committed eval results with their history, the committed campaign results and the recorded sample runs are not: they come from manual runs, and all but the campaign spend API credit.
 
 | Boundary | What goes out | What comes back |
 |---|---|---|
@@ -32,7 +32,7 @@ Built today: `cli`, `config`, `audit`, `llm`, `manifest` (not drawn; `cli` loads
 | Client repository | nothing | file contents, read in place from a directory or from a zip extracted into the run directory |
 | Runs directory | the audit trail, the run record, agent outputs, report, summary and decisions | the audit trail's existing lines, read on reopen; a run's `run.json`, `report.md` and `decisions.jsonl`, read by `assess decide` |
 
-Evals run the same agent code through the same gateway in their own process, for the two examiners, the reviewer, the writer and the coordinator. The dependency examiner's evals answer OSV queries from the `osv_replay.json` beside its cases instead of the live service, and the writer's evals add a request of their own, the tone judge's, through the same gateway. The coordinator's evals answer its dispatches from a script instead of running the sub-agents, so the only requests they send are the coordinator's own. The bypass campaign, `python -m evals.punchout`, calls no service: it runs the real `gates` code on run directories it builds in a temporary directory.
+Evals run the same agent code through the same gateway in their own process, for the two examiners, the reviewer, the writer and the coordinator. The dependency examiner's evals answer OSV queries from the `osv_replay.json` beside its cases instead of the live service, and the writer's evals add a request of their own, the tone judge's, through the same gateway. The coordinator's evals answer its dispatches from a script instead of running the sub-agents, so the only requests they send are the coordinator's own. The bypass campaign, `python -m evals.punchout`, calls no service: it runs the real `gates` code on run directories it builds in a temporary directory. The submission tools, `python -m submission.build` and `python -m submission.validate`, call no service either: they read a ZIP's entries in memory, and the builder writes only a new ZIP beside the old one.
 
 ## Repository structure
 
@@ -53,9 +53,12 @@ codebase-health-assessor/
 │   ├── agents/runner.py
 │   ├── coordinator.py
 │   └── gates.py, report.py
+├── submission/                   # rules.py (rule IDs, classification table, maps), build.py (python -m
+│                                 #   submission.build), validate.py (python -m submission.validate); not packaged
 ├── tests/                        # offline pytest suite; conftest.py holds FakeAnthropic; fixtures/ holds an OSV
-│                                 #   replay sample; test_readme_evidence_map.py and test_examples.py check the README
-│                                 #   and examples/
+│                                 #   replay sample and iterations_golden.md; test_readme_evidence_map.py,
+│                                 #   test_docs_mention_tools.py and test_examples.py check the README, the docs and
+│                                 #   examples/; test_submission_build.py archives the checkout with git
 ├── manifests/                    # one JSON manifest per agent, substance.json
 ├── prompts/                      # one system prompt per agent
 ├── skills/                       # secrets_and_config_checklist.md, dependency_risk_checklist.md
@@ -71,7 +74,7 @@ codebase-health-assessor/
                                   #   substance-toy.json, sample-runs/README.md, (planned) the recorded runs in sample-runs/
 ```
 
-`config.ROOT` is the repository root, and pricing and schemas load from there, so the tool runs from a source checkout, not from an installed wheel.
+`config.ROOT` is the repository root, and pricing and schemas load from there, so the tool runs from a source checkout, not from an installed wheel. `evals` and `submission` are not packaged either: `python -m` finds them from the repository root, and pytest's `pythonpath = ["."]` lets the tests import them. `docs/iterations.md`, `manifest.yaml` and `git_log.txt` exist only in the submission ZIP.
 
 ## Components
 
@@ -90,6 +93,7 @@ codebase-health-assessor/
 | `gates` | `open_gates(ratings=, disposition=, verdicts=, draft_id=, latest=)` returns the gates open at run end, each `{gate, subjects}`, in `GATES` order. `decide(correlation_id, *, decision, reviewer, note=None, runs_dir=None, os_user=, clock=)` appends a decision record to `decisions.jsonl` and a `decision_recorded` audit line under an exclusive `fcntl.flock`, and returns the record; it raises `DecisionRefused` for an unknown run, a `run.json` that is missing or not a run record, a run with no open gate and a run already decided. `effective_status(correlation_id, *, runs_dir=None)` derives the status from `run.json` and `decisions.jsonl`. | `audit`, `config` |
 | `report` | `render(...)` returns `report.md`: a section per step, titled from `REPORT_TITLES` with the status computed from the named examination's findings, the writer's prose under each, the review trail and, for a pending run, the human-review text. Every other heading is a fixed literal, and every `<` in model-written or operator-chosen text becomes `&lt;`, so no tag or comment can hide or forge a heading or a status. It keeps its own PASS/FAIL rule over `FAILING_SEVERITIES` because it may import only `config`; `tests/test_report.py` keeps it equal to `coordinator.section_status`. | `config` |
 | `evals` | `run.py`: `load_criteria` and `load_eval_set` check an agent's criteria and cases against its manifest and each other before any model call; for an agent whose manifest declares `query_osv`, `load_eval_set` also loads its `osv_replay.json` and gives each case the replay's path and the advisory identifiers recorded in it. `run_eval_set` runs each case N times through the agent's executor in `AGENTS`, which calls `agents.runner.run_subagent` (the reviewer's client is wrapped to record the paths of its `read_file` calls, and the writer's accepted draft goes on to the tone judge, a request of its own through `llm.call`) or, for the coordinator, `coordinator.run` with its sub-agents scripted (its client is wrapped, `_Trace`, to record each launch and the result it got back), with an audit log of its own per case run under `evals/.runs/`. `write_results`, `history_line`, `append_history` and `main` (Interfaces, Evals). `punchout.py`: `run_campaign` runs the bypass scenarios against `gates.open_gates`, `gates.decide`, `gates.effective_status` and the coordinator manifest, each replaceable by a keyword argument, on run directories `write_run` builds; `main` writes the campaign's results (Interfaces, Evals, The bypass campaign). `scoring.py`: the scorers (`SCORERS`), `score`, `input_ids`, `locations`, `same_file`, `normal_path`, `meets`, `passed` and `summarize`; of the package it imports only `config`. Built for all five agents; `judges/tone.md` is the writer's tone judge. `scripted_dispatcher.py`: `ScriptedDispatcher`, which stands in for `agents.runner.run_subagent` in coordinator evals, `replacing_subagents` and `workspace_of`, which put it in place and give it a workspace, and `check_script` (Interfaces, Evals, The coordinator set). | `assessor.*` and `jsonschema`, never the reverse |
+| `submission` | `rules.py`: the validator's rule IDs in precedence order, the classification table every ZIP file must match (`CLASSIFICATION`, `classify`, `matches`), `covers` (what a `not_judged` path excludes), the role, punch-out and workflow maps, the fixed paths of the derivation (`AUDIT_FILE` repeats `audit.AUDIT_FILE`), `MANIFEST_RULES` and `MANIFEST_SCHEMA`, the R2 shape. `validate.py`: `check(names, manifest)` returns each rule's violations, `cited(data)` the paths a manifest cites, `printable` the escaped form of a name, and `main` prints the report. `build.py`: `derive(names, contents)` returns `manifest.yaml`, `docs/iterations.md` and the problems that refuse the build, `render_iterations` and `dump_manifest` write the two files, and `main` writes the new ZIP (Interfaces, Submission tools). | `assessor.config`, the constant `assessor.manifest.COORDINATOR`, `jsonschema` and `pyyaml`; never `evals`, and nothing imports `submission` |
 
 Which imports are allowed between these modules: see CLAUDE.md.
 
@@ -136,6 +140,7 @@ A sub-agent's system prompt is its prompt followed by each of its skills, separa
 | `jsonschema` | 4.26.0 | Draft 2020-12 validation of audit lines, manifests, substance ratings, tool inputs, agent outputs and the eval `criteria.json`, `case.json` and `script.json` files; the output schemas are the same files `agents.runner` sends as `output_config.format` |
 | `httpx2` | 2.16.0, declared directly | the OSV client, and the SDK's own HTTP client |
 | `pytest` | 9.1.1, dev group | test runner |
+| `pyyaml` | 6.0.3, dev group | `manifest.yaml`: `safe_dump` in `submission.build`, `safe_load` in `submission.validate`; `assess` never imports it, and `poetry install` installs the dev group |
 
 ## Data and state
 
@@ -237,6 +242,17 @@ Also built, in `config`, and pinned by `tests/test_config.py`; `tests/test_audit
   - `dependency_examiner.dependency_hygiene`: "Dependency hygiene"
 - **Eval comparisons** (`COMPARISONS`): `at_least` (a mean score must reach the threshold), `at_most` (it must not exceed it). `evals.scoring` and `evals.run` read it; `schemas/eval_history.schema.json` repeats the values, and `tests/test_eval_history.py` keeps them equal.
 
+Also built, in `submission/rules.py`, and pinned by `tests/test_submission_build.py` and `tests/test_submission_validate.py`; `test_the_submission_maps_match_config_and_the_eval_runner` fails when the maps drift from `config` or `evals.run`:
+
+- **Validator rules** (`RULES`), in precedence order, which is also the printing order: `PATH`, `R1`, `R2`, `R5`, `R6`, `R3`, `R4`, `R8`, `LOG`. R7 (one file may serve several steps) is allowed behaviour, not a check. Each is printed as PASS, FAIL or SKIPPED. `MANIFEST_RULES` (`R6`, `R3`, `R4`, `R8`, `LOG`) are the ones that read the manifest.
+- **Manifest roles** (`MANIFEST_ROLES`): coordinator, subagent, adversarial. **Dispatch modes** (`DISPATCH_MODES`): messages-api, subprocess, cli.
+- **Runtime role to manifest role** (`ROLES`, keyed by `config.AGENT_ROLES`): coordinator is coordinator, examiner and writer are subagent, reviewer is adversarial.
+- **Punch-outs** (`PUNCH_OUTS`, valued by `config.GATES`): substance-gate is `SUBSTANCE_ELEVATION`, open-critical-challenge is `OPEN_CRITICAL_CHALLENGE`, coordinator-escalation is `COORDINATOR_ESCALATION`.
+- **LLM agents** (`AGENTS`): the keys of `evals.run.AGENTS` in their order, which `submission` may not import. `REVIEWER` is the one of them that no workflow owns (`adversarial_reviewer`, equal to the runtime reviewer); its eval files are cited by that name when the manifests do not say which agent the reviewer is.
+- **Manifest workflows** (`WORKFLOWS`): security (security_examiner), dependency (dependency_examiner), reporting (final_review_writer), coordination (coordinator).
+- **Version-control directories** (`VCS_DIRS`): `.git`, `.svn`, `.hg`. **Legacy agents files** (`LEGACY_AGENT_FILES`): `agents.json`, `agents.yaml`.
+- **Classification** (`CLASSIFICATION`): twenty rules, each with a reason of its own. A pattern ending in `/` covers every path beneath a directory it names, and `*` matches within one path segment; the first rule a file matches classifies it, and every file the package line ships matches exactly one.
+
 ## Key flows
 
 **Argument parsing** (built)
@@ -334,6 +350,14 @@ A coordinator case sends no sub-agent request: the scripted dispatcher answers e
 1. `evals.punchout` takes no arguments. It reads the clock once for the results file's name and `generated_at`, and creates a temporary directory for the run directories, removed when the campaign ends.
 2. `run_campaign` runs P1 to P14 in order (Interfaces, Evals, The bypass campaign). P1 to P7 call `open_gates` on built gate inputs. P8, P9, P11, P13 and P14 build run directories with `write_run`, each with the `audit.jsonl`, `run.json` and, unless it halted, `report.md` that `gates` reads, and call `decide` and `effective_status` on them; P10 calls `decide` on an ID that names no run, and P12 reads the coordinator manifest. A scenario whose code raises is not held, with the exception's type as what it observed.
 3. `main` writes `evals/results/punchout/<YYYYMMDDTHHMMSSZ>-punchout.json`, created exclusively, prints one line saying how many scenarios held and where the file is, then one line per scenario, and exits 0 when every scenario held and 1 otherwise. A file already there for the same second exits 2, stays as it was, and nothing is printed to standard output. A write that fails removes the file it created and propagates.
+
+**Packaging** (`submission`)
+1. The package line (README, ZIP packaging) exports `git_log.txt` with `git log --stat`, archives `HEAD` with `git archive` and adds `git_log.txt` with `zip -u`.
+2. `submission.build` reads the ZIP's entry list and the bytes of every file entry into memory. A ZIP it cannot read (a damaged central directory or member, an entry name that is not UTF-8), or one that already holds `manifest.yaml` or `docs/iterations.md`, exits 2.
+3. `derive` refuses an entry name that appears twice, classifies every file entry, loads the five agent manifests against the ZIP's own `schemas/manifest.schema.json`, finds the one run under each of `examples/sample-runs/finalized/` and `examples/sample-runs/elevated/`, reads each campaign file's `all_held` and checks every history line against the ZIP's `schemas/eval_history.schema.json`. It derives the manifest's sections from the manifests that loaded and lists every cited file the ZIP lacks, so a manifest that failed costs the check of its own prompt file alone. Any problem exits 1, with every problem printed.
+4. It lists every file nothing cites under `not_judged` and dumps the manifest with `safe_dump`. The build does not run the validator: `submission.validate` is the next line of the package.
+5. It writes `<zip>.tmp` (an earlier file by that name is overwritten): every entry of the ZIP in order, with its name, compression method, attributes and comment and the ZIP's comment, each dated 1980-01-01 00:00:00, then `docs/iterations.md` and `manifest.yaml`. It flushes and fsyncs that file and renames it over the ZIP. Any error removes `<zip>.tmp` and propagates, and the ZIP stays as it was. Builds of one ZIP must not overlap.
+6. `submission.validate` reads the ZIP's bytes once, hashes them, reads the entry names and `manifest.yaml`, checks the rules, prints the report and exits 0 or 1; a ZIP it cannot read exits 2 before any report.
 
 ## Interfaces
 
@@ -589,6 +613,64 @@ The fixture runs: the gate inputs have the shipped ratings (both examiners core,
 | P13 | none | `decide` with a malformed correlation ID, and with a decision outside `config.HUMAN_DECISIONS` | each raises `ValueError` and records nothing |
 | P14 | `SUBSTANCE_ELEVATION` | `reject` a pending run | `effective_status` is `rejected_by_human` |
 
+### Submission tools
+
+```
+python -m submission.build <zip>
+python -m submission.validate <zip>
+```
+
+Each takes one ZIP path and nothing else. Neither extracts the ZIP: they read its entry names and, in memory, the entries they need. Neither imports `evals` or `cli`, and neither spawns a process.
+
+**`submission.build`.** Exit codes: 0 both files written; 1 the build is refused, with every problem on stderr as `submission.build: <problem>`, control characters in a name escaped; 2 the ZIP cannot be read (missing, not a ZIP, a damaged central directory, a member with a bad CRC, a corrupt stream, encryption or an unsupported compression method, an entry name that is not UTF-8) or already holds `manifest.yaml` or `docs/iterations.md`, because adding either again would duplicate the entry. A failed write propagates with a traceback. These problems refuse the build:
+- an entry name that appears twice (the copy would write one member's bytes for both, and `zipfile` warns about a repeated directory name), and a file entry that no rule in `rules.CLASSIFICATION` matches; directory entries are neither classified nor cited
+- `manifests/` not holding exactly the five agent manifests beside `substance.json`; a manifest that is not JSON, fails the ZIP's `schemas/manifest.schema.json`, has a `name` other than its file name or a role `rules.ROLES` lacks; a reviewer whose `isolated_context` is not true, or other than one reviewer; the ZIP's manifest or history schema missing, not a JSON Schema or not applicable (an unresolved `$ref`); an agent manifest without the `steps` its workflow needs, or without a `prompt` and a `tools` list whatever the ZIP's schema asks for. Every manifest that is there is checked even when the count is wrong, and the cited-file check below runs whichever manifests failed, except for the prompt file of each one that did. The ZIP's `schemas/eval_history.schema.json` is trusted to require the fields the build reads from a history line: a schema that lets one lack a field makes the build raise
+- not exactly one run directory under each of `examples/sample-runs/finalized/` and `examples/sample-runs/elevated/`
+- a campaign file (`evals/results/punchout/*-punchout.json`) that is not JSON or has no boolean `all_held`, and no campaign file whose `all_held` is true
+- a missing history; a history line that is not UTF-8 JSON (NaN and Infinity count as not JSON), not an object, fails the ZIP's `schemas/eval_history.schema.json`, names an agent outside the five or holds a number that is not finite (`1e999`, an integer too large for a float, per-run means whose sum overflows), each named by line number; an agent with no line. Identical duplicate lines are legal, and a torn last line is a malformed one.
+- a cited file missing from the ZIP
+
+Every entry of the new ZIP is dated 1980-01-01 00:00:00, so the same input ZIP gives the same output ZIP, whatever time `git archive` or `zip -u` stamped on a file, on one Python and zlib; the copy recompresses each member, so another zlib can write other bytes.
+
+**`manifest.yaml`** holds only the field names of the intake's published manifest shape, in that order, written with `yaml.safe_dump` (block style, keys in order, no anchors or aliases):
+
+| Section | Value |
+|---|---|
+| `schema_version` | 2 |
+| `submission` | `title: codebase-health-assessor`, `stage: 5` |
+| `coordinator` | `entry_point: src/assessor/coordinator.py`; `prompt_file`: the coordinator manifest's `prompt`; `dispatch: messages-api` |
+| `agents` | one per agent manifest, in `rules.AGENTS` order: `name`; `role` by `rules.ROLES`; `workflows` (the coordinator all four, the examiners and the writer their own, the reviewer none); `allowed_tools`: the manifest's `tools`; `reviews`: the reviewer's `assignment`, empty for the others; `isolated_context`: true except for the coordinator |
+| `workflows` | `security` (security_examiner) and `dependency` (dependency_examiner) with the steps of the examiner's manifest, `reporting` (final_review_writer, step `final_review`) and `coordination` (coordinator, step `dispatch_governance`). All but `coordination` take `sub_agent_entry_point: src/assessor/agents/runner.py`. Each step's `prompt_file` is the agent's `prompt`; its `eval_files` are the agent's `criteria.json`, every `cases/*/case.json` (the coordinator's `script.json`) in name order, `evals/run.py`, `evals/scoring.py`, and `evals/dependency_examiner/osv_replay.json`, `evals/judges/tone.md` or `evals/scripted_dispatcher.py` for the dependency examiner, the writer and the coordinator; its `log_files` are `docs/iterations.md`, `evals/results/history.jsonl` and each sample run's `audit.jsonl`. `artifacts` holds `log: docs/iterations.md` and `success_rate: evals/results/<agent>.json` |
+| `punch_outs` | `substance-gate`: the elevated run's `decisions.jsonl`, `manifests/substance.json`, `examples/substance-toy.json`, `evals/punchout.py` and every campaign file that held. `open-critical-challenge` and `coordinator-escalation`: `evals/punchout.py`, every campaign file that held and `evals/results/coordinator.json` |
+| `adversarial_review` | `reviewer_agent`: the reviewer; `evidence`: its prompt, its `criteria.json` and every `cases/*/case.json`, `evals/results/<reviewer>.json` and each sample run's `reviews/RV-*.json` |
+| `version_control` | `evidence: [git_log.txt]` |
+| `not_judged` | every file nothing cites, `manifest.yaml` excepted, sorted by path, with the reason of its classification rule: a directory (a `path` ending in `/`) where every file beneath it is uncited and has the same rule, the file itself otherwise. A campaign file that did not hold is listed as "campaign run that did not hold". |
+
+**`docs/iterations.md`** is `# Iteration log`, then one `## <agent>` section per agent in `rules.AGENTS` order. Each section holds the table `| # | Date (UTC) | Prompt | Skills | Criteria (per-run means) | All passed | Cost (USD) | Note |` with one row per history line in file order:
+- the row number, restarting at 1 for each agent, and `YYYY-MM-DD` of `generated_at`
+- the first 8 characters of `prompt_sha256` and of `skills_sha256`
+- `<criterion>: m1/m2/m3` joined by `; `, each mean as JSON prints it
+- `yes` or `no`, then `$` and six decimals, or `unknown` for a null cost
+- the note with `\` written `\\` and then `|` written `\|`
+
+From two lines on, `### Before and after` follows with `| Criterion | First | Last |`: each criterion of the first line, then the last line's others, each cell that line's mean of its `per_run_mean` values to 4 decimals, or `-` where that line lacks the criterion. With one line, `One execution recorded.` follows instead. `tests/fixtures/iterations_golden.md` pins the format.
+
+**`submission.validate`.** Exit codes: 0 no violation, 1 any, 2 a usage error or a ZIP or `manifest.yaml` that cannot be read (the kinds of damage the build lists; only the central directory and `manifest.yaml` are read, so a damaged other member does not change the result), with `submission.validate: cannot read <zip>: <error>` on stderr. It prints `zip: <path>` and `sha256: <hex of the whole file>`, then each rule in precedence order as `<rule>: PASS|FAIL|SKIPPED` with each of its violations under it as `  <rule> <path or field>: <problem>`, and last `result: PASS` or `result: FAIL, <n> violations` (`1 violation` for one), control characters in a name escaped so that no line can be forged. A path that breaks several rules is reported once for each kind of path it is (an entry name, a path the manifest cites, a `not_judged` path), under the first rule that applies in the order `PATH`, `R1`, `R2`, `R5`, `R6`, `R3`, `R4`, `R8`, `LOG`, and a rule's path violations are sorted by path. Directory entries count only for R5.
+
+| Rule | Fails when |
+|---|---|
+| `PATH` | an entry name, or a path the manifest cites or lists in `not_judged`, is empty, absolute, holds a backslash or has a `..` segment; or a cited or listed path matches files only when letter case is ignored (those files are then not also R4) |
+| `R1` | there is no `manifest.yaml` file entry at the root |
+| `R2` | the manifest does not load with `yaml.safe_load` (an unsafe tag, two documents, a date that names no day, nesting too deep for the parser) or is not a mapping, or nests too deeply or refers to itself, or holds more than `EXPANDED_MAX` (100,000) values once its aliases are expanded; it breaks `rules.MANIFEST_SCHEMA`: `schema_version` 2, `submission.stage` 5, a `coordinator` with `entry_point` and a `dispatch` of messages-api, subprocess or cli, exactly one agent with role coordinator, each agent a non-empty `name` and a role of coordinator, subagent or adversarial, at least one workflow, each with a non-empty `name` and at least one step, each step a non-empty `name`, a `prompt_file` and at least one `eval_files` entry, each punch-out a non-empty `name` and evidence, `adversarial_review` and `version_control` with at least one evidence entry, each `not_judged` entry a `path` and a reason with a non-space character, no other field and every field of its type; or a step name repeats within its workflow |
+| `R5` | an entry, directory entries included, has a path component `.git`, `.svn` or `.hg`, listed or not |
+| `R6` | an `agents.json` or `agents.yaml` at any depth is covered by no `not_judged` path |
+| `R3` | a path cited outside `not_judged` names no file entry |
+| `R4` | a file entry other than `manifest.yaml` is neither cited nor covered by a `not_judged` path, or a `not_judged` path covers no file entry (`runs/` covers `runs/x`, not `runs2/x`) |
+| `R8` | an `adversarial_review` section has no `reviewer_agent`, or it names no agent whose role is adversarial |
+| `LOG` | a step has no `log_files`, or an empty list, and its workflow declares no `artifacts.log` |
+
+A missing manifest makes R2 and `MANIFEST_RULES` (R6, R3, R4, R8, LOG) SKIPPED; one that does not load as a mapping makes `MANIFEST_RULES` SKIPPED. `PATH` (entry names only), R1 and R5 still run. The other rules ignore a value of the wrong type, which fails R2, so a file that only that value cites is also R4. A file cited by several steps is legal (R7).
+
 ## Configuration
 
 | Key | Where | Default | Status |
@@ -696,6 +778,16 @@ The fixture runs: the gate inputs have the shipped ratings (both examiners core,
 | Rubric card names | The six cards are named as the planning session read them from the Stage 5 "What We Examine" screenshot: dispatch-only coordinator, sub-agents scoped to one workflow, adversarial review in its own context, version-controlled repo, Stage 4 continuity, mega-agent counterfeit | The Stage 5 page cannot be read through the connector. The names are not checked against it, so a wrong one costs a cell in the map and the constant in the test | Leaving the cards unnamed (the map would not answer the rubric) |
 | Evidence that needs a manual run | Until the eval results and the sample runs are committed, their rows name the directories `evals/results/` and `examples/sample-runs/`, each holding a README | A glob with no match fails the path test, and the READMEs make the directories exist. Once the files are committed, the rows can use `evals/results/*.json` and `examples/sample-runs/*/*/audit.jsonl`, and the test then enforces them | Globs over files that do not exist yet (the test fails); leaving the rows out |
 | Toy ratings | `examples/substance-toy.json` rates only the final review writer toy and keeps the shipped examiner ratings and the reviewer entry | One toy workflow opens `SUBSTANCE_ELEVATION`, and the writer is the workflow the shipped ratings already rate lowest | Two peripheral ratings (two edits, and the gate's subjects read less clearly); a toy examiner (misstates billable work) |
+| History and iteration log | `evals.run` appends one line per agent execution to `evals/results/history.jsonl` and never rewrites one; `submission.build` renders `docs/iterations.md` into the ZIP from it, and the rendered file is not committed (user decision) | `write_results` replaces each results file whole, so only an append-only history keeps the before and after that the intake's log rule asks for | A hand-written log (drifts from the measured results); a committed rendered file (goes stale); one results file per execution (clutter) |
+| Punch-out evidence | `python -m evals.punchout` runs scripted bypass attempts against the real `gates` code on run directories it builds, with no model call, and asserts gate lists and `effective_status`, not the run status `cli` computes (user decision) | The gates are harness code computed from reviews and the disposition, so they can be tested without the model, and the intake asks for the campaign file a claimed punch-out rests on | A real-model campaign (spends credit and shows only that the model did not try); moving the status rule from `cli` into `gates` (a change to built code for one line); declaring one punch-out (under-claims) |
+| Manifest generation | `submission.build` derives `manifest.yaml` from the ZIP's own entries and `manifests/*.json`, after classifying every file by a directory-granular rule in `submission/rules.py`, and writes a new ZIP that it renames over the old one; PyYAML in the dev group writes it (user decision) | R3 and R4 need paths that match the ZIP exactly, and the evidence paths hold correlation IDs and timestamps that exist only after the manual runs | A hand-written manifest (drifts from `manifests/*.json`); the intake's local-model packaging prompt (not deterministic); a catch-all exclusion (R4 forbids silent extras); reading the checkout (the ZIP could differ from it) |
+| Workflow map | Four workflows: `security`, `dependency`, `reporting` (the writer) and `coordination` (the coordinator, step `dispatch_governance`); the reviewer is an `adversarial` agent with an `adversarial_review` section (user decision) | The intake's shape has no field for a coordinator's evals, and only steps take `eval_files` | Writer-only or examiners-only workflows (the other agents' evals would move to `not_judged`) |
+| Validator scope | `submission.validate` checks the published rules from entry names and the manifest alone, never extracts, and is not the real intake | A rejection found after submitting costs a round trip | Relying on the real intake alone |
+| Rule precedence | A path that breaks several rules is reported once, under the first in a fixed order, separately as an entry name, a cited path and a `not_judged` path (so a path that is both cited and excluded can report both its R3 and its R4); a wrong-case citation is `PATH` and its file is not also R4 (author decision) | One line per thing to fix, and the same ZIP always gives the same report | Reporting every rule a path breaks |
+| Duplicate entry names | The build refuses a ZIP with two entries of one name, directories included; the validator counts the name once (author decision) | The copy reads each member by name, so it would write the last one's bytes under both | Keeping both entries byte for byte |
+| R6 coverage | A legacy `agents.json` or `agents.yaml` passes R6 when any `not_judged` path covers it, a directory included (author decision) | The build's directory exclusions would otherwise fail its own validation for a fixture repository that ships such a file; the intake's content comparison is not mirrored either way | Requiring the file's own `not_judged` entry |
+| R2 names | R2 also requires a `name` on every agent and workflow, beyond the fields the intake's R2 names (author decision) | `reviewer_agent` and each agent's `workflows` refer to them by name, and the build always writes them | Only the listed fields |
+| Entry times | Every entry of the new ZIP is dated 1980-01-01 00:00:00, copied ones included; the other attributes of a copied entry stay (author decision) | `zip -u` stamps `git_log.txt` with the packaging time and `git archive` stamps the commit's, so keeping them would make two packagings of one commit differ | Keeping the input times; the newest input entry's time |
 | Sample client repo | A small Flask and npm project that plants at least one issue per examiner step: AWS's documented example keys in `config.py`; debug mode on every interface, wildcard CORS with credentials and TLS verification off in `app.py`; `requests==2.19.0` and `lodash` 4.17.15, which the committed OSV replay holds advisories for; unpinned `gunicorn` and `express`, and no lockfile. `tests/test_examples.py` pins each seed, and `examples/sample-runs/README.md` lists them | The sample runs need known issues to show, and the test keeps a seed from being fixed by accident | A copy of an eval case (its answer key is in the criteria) |
 
 ## Open questions
