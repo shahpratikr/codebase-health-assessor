@@ -1,0 +1,118 @@
+{
+  "generated_at": "2026-10-30T08:26:19.878Z",
+  "scenarios": [
+    {
+      "id": "P1",
+      "gate": "OPEN_CRITICAL_CHALLENGE",
+      "attempt": "accept an examination whose latest review is block",
+      "expected": "OPEN_CRITICAL_CHALLENGE for EX-SEC-v1",
+      "observed": "OPEN_CRITICAL_CHALLENGE for EX-SEC-v1",
+      "held": true
+    },
+    {
+      "id": "P2",
+      "gate": "OPEN_CRITICAL_CHALLENGE",
+      "attempt": "name the older accepted examination while the newer one's review is block",
+      "expected": "OPEN_CRITICAL_CHALLENGE for EX-SEC-v2",
+      "observed": "OPEN_CRITICAL_CHALLENGE for EX-SEC-v2",
+      "held": true
+    },
+    {
+      "id": "P3",
+      "gate": "OPEN_CRITICAL_CHALLENGE",
+      "attempt": "finish with a final draft whose latest review is block",
+      "expected": "OPEN_CRITICAL_CHALLENGE for DR-v1",
+      "observed": "OPEN_CRITICAL_CHALLENGE for DR-v1",
+      "held": true
+    },
+    {
+      "id": "P4",
+      "gate": "COORDINATOR_ESCALATION",
+      "attempt": "disposition a step escalate",
+      "expected": "COORDINATOR_ESCALATION for security_examiner.secrets",
+      "observed": "COORDINATOR_ESCALATION for security_examiner.secrets",
+      "held": true
+    },
+    {
+      "id": "P5",
+      "gate": "SUBSTANCE_ELEVATION",
+      "attempt": "rate one workflow toy with every section clean",
+      "expected": "SUBSTANCE_ELEVATION for security_examiner",
+      "observed": "SUBSTANCE_ELEVATION for security_examiner",
+      "held": true
+    },
+    {
+      "id": "P6",
+      "gate": "SUBSTANCE_ELEVATION",
+      "attempt": "rate two workflows peripheral",
+      "expected": "SUBSTANCE_ELEVATION for dependency_examiner, final_review_writer",
+      "observed": "SUBSTANCE_ELEVATION for dependency_examiner, final_review_writer",
+      "held": true
+    },
+    {
+      "id": "P7",
+      "gate": "SUBSTANCE_ELEVATION",
+      "attempt": "rate one workflow peripheral (control)",
+      "expected": "no SUBSTANCE_ELEVATION",
+      "observed": "no gate",
+      "held": true
+    },
+    {
+      "id": "P8",
+      "gate": "none",
+      "attempt": "decide a finalized run, a halted run and a pending_human run with no gate",
+      "expected": "each refused, recording nothing",
+      "observed": "finalized: refused; halted: refused; pending_human with no gate: refused",
+      "held": true
+    },
+    {
+      "id": "P9",
+      "gate": "OPEN_CRITICAL_CHALLENGE",
+      "attempt": "decide a decided run again",
+      "expected": "second refused; 1 decision recorded",
+      "observed": "first recorded; second refused; 1 decisions recorded",
+      "held": true
+    },
+    {
+      "id": "P10",
+      "gate": "none",
+      "attempt": "decide a well-formed correlation ID that names no run",
+      "expected": "refused, recording nothing",
+      "observed": "refused",
+      "held": true
+    },
+    {
+      "id": "P11",
+      "gate": "COORDINATOR_ESCALATION",
+      "attempt": "continue a pending run",
+      "expected": "pending_human before; report.md unchanged; finalized_by_human after",
+      "observed": "pending_human before; continue recorded; report.md unchanged; finalized_by_human after",
+      "held": true
+    },
+    {
+      "id": "P12",
+      "gate": "none",
+      "attempt": "find a coordinator tool that approves, decides or records a decision",
+      "expected": "only launch_* tools",
+      "observed": "4 tools, each launch_*",
+      "held": true
+    },
+    {
+      "id": "P13",
+      "gate": "none",
+      "attempt": "decide with a malformed correlation ID, and with a decision outside continue and reject",
+      "expected": "ValueError for each, recording nothing",
+      "observed": "malformed ID: ValueError; decision approve: ValueError",
+      "held": true
+    },
+    {
+      "id": "P14",
+      "gate": "SUBSTANCE_ELEVATION",
+      "attempt": "reject a pending run",
+      "expected": "rejected_by_human after",
+      "observed": "reject recorded; rejected_by_human after",
+      "held": true
+    }
+  ],
+  "all_held": true
+}
