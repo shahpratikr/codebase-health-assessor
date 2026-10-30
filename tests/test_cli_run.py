@@ -640,6 +640,19 @@ def test_a_zip_that_fails_while_extracting_exits_2_and_leaves_no_run_directory(
     assert (client.requests, _no_run_created(tmp_runs_dir)) == ([], True)
 
 
+def test_a_base_url_that_carries_credentials_exits_2_without_echoing_it_and_creates_no_run(
+    monkeypatch, tmp_path, tmp_runs_dir, capsys
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://alice:s3cret@proxy.example.test")
+    assert cli.main(["run", str(_repo(tmp_path))], clock=lambda: NOW) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("assess run: ANTHROPIC_BASE_URL must not carry a username or password")
+    assert "s3cret" not in captured.err
+    assert _no_run_created(tmp_runs_dir)
+
+
 def test_missing_credentials_exit_2_with_a_message_and_no_run(monkeypatch, tmp_path, tmp_runs_dir, capsys):
     def refuse():
         raise NoCredentialsError("no Anthropic credentials: set ANTHROPIC_API_KEY")

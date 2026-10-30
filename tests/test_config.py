@@ -210,6 +210,27 @@ def test_dependency_files_are_the_confirmed_set():
     assert {kind for _, _, kind in config.DEPENDENCY_FILES} == set(config.DEPENDENCY_FILE_KINDS)
 
 
+def test_anthropic_api_key_defaults_to_none(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert config.anthropic_api_key() is None
+
+
+def test_anthropic_api_key_reads_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert config.anthropic_api_key() == "test-key"
+
+
+@pytest.mark.parametrize("value", ["", "   ", "\n"])
+def test_blank_anthropic_api_key_env_counts_as_unset(monkeypatch, value):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", value)
+    assert config.anthropic_api_key() is None
+
+
+def test_anthropic_api_key_is_trimmed(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", " test-key\n")
+    assert config.anthropic_api_key() == "test-key"
+
+
 def test_osv_replay_defaults_to_live(monkeypatch):
     monkeypatch.delenv("ASSESSOR_OSV_REPLAY", raising=False)
     assert config.osv_replay() is None

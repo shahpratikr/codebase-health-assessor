@@ -13,11 +13,12 @@ poetry install
 export ANTHROPIC_API_KEY="<your key>"
 ```
 
-The key is read from the environment and never written anywhere. `poetry run pytest` runs offline and needs no key. `assess run` and the evals call the Anthropic API and spend credit.
+The key is read from the environment and never written anywhere. It is sent in the `x-api-key` header, and it is the only credential used: `ANTHROPIC_AUTH_TOKEN`, `ant auth login` profiles and workload identity federation are ignored. A blank key counts as unset. `poetry run pytest` runs offline and needs no key. `assess run` and the evals call the Anthropic API and spend credit.
 
-Two optional environment variables:
+Three optional environment variables:
 - `ASSESSOR_RUNS_DIR` is where run directories go. It defaults to `runs` in the working directory.
 - `ASSESSOR_OSV_REPLAY` is a JSON file that `assess run` replays for OSV lookups instead of calling `https://api.osv.dev/v1/query`.
+- `ANTHROPIC_BASE_URL` is the address the requests go to, which the Anthropic SDK reads. Set it when the key was issued for a proxy; it defaults to `https://api.anthropic.com`. It must not carry a username or password, and the client follows no redirects.
 
 ## Commands
 

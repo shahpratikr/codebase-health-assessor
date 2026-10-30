@@ -10,7 +10,7 @@ from assessor.audit import AuditLog
 RETURNED_STOP_REASONS = ("end_turn", "tool_use")
 # The context window cuts the output short the same way max_tokens does.
 MAX_TOKENS_STOP_REASONS = ("max_tokens", "model_context_window_exceeded")
-_NO_CREDENTIALS = "no Anthropic credentials: set ANTHROPIC_API_KEY or run `ant auth login`"
+_NO_CREDENTIALS = "no Anthropic credentials: set ANTHROPIC_API_KEY"
 _NO_RESPONSE = {
     "served_model": None,
     "fallback_ran": False,
@@ -25,7 +25,7 @@ _NO_RESPONSE = {
 
 
 class NoCredentialsError(Exception):
-    """The SDK resolved no API key, auth token or credentials provider, so every request would fail."""
+    """ANTHROPIC_API_KEY is unset or blank, so every request would fail."""
 
 
 class LLMError(Exception):
@@ -39,13 +39,26 @@ class LLMError(Exception):
 
 
 def make_client() -> anthropic.Anthropic:
-    """Return an SDK client, or raise NoCredentialsError when no credentials resolve."""
-    try:
-        client = anthropic.Anthropic(max_retries=config.SDK_MAX_RETRIES)
-    except anthropic.CredentialsError as error:
-        raise NoCredentialsError(f"could not load Anthropic credentials: {error}") from error
-    if client.api_key is None and client.auth_token is None and client.credentials is None:
+    """Return an SDK client authenticated by ANTHROPIC_API_KEY, or raise NoCredentialsError when it is unset or blank.
+
+    Raises ValueError when the base URL the SDK resolved from ANTHROPIC_BASE_URL carries a username or password.
+    """
+    key = config.anthropic_api_key()
+    if key is None:
         raise NoCredentialsError(_NO_CREDENTIALS)
+    # The SDK sends an api_key as "Authorization: Bearer", which the proxy in front of the API strips, so the key goes
+    # in x-api-key and the bearer header is omitted. An explicit api_key also stops the SDK reading other credentials.
+    client = anthropic.Anthropic(
+        api_key=key,
+        default_headers={"x-api-key": key, "Authorization": anthropic.Omit()},
+        # httpx2 strips only Authorization when a redirect leaves the origin, so a followed one would carry x-api-key.
+        http_client=anthropic.DefaultHttpxClient(follow_redirects=False),
+        max_retries=config.SDK_MAX_RETRIES,
+    )
+    # httpx2 turns such a URL into an Authorization: Basic header when it sends. The message leaves the URL out
+    # because it holds a secret.
+    if client.base_url.username or client.base_url.password:
+        raise ValueError("ANTHROPIC_BASE_URL must not carry a username or password; the key goes in x-api-key")
     return client
 
 

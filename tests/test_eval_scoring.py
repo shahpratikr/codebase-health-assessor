@@ -1252,6 +1252,20 @@ def test_bad_arguments_exit_2_before_credentials_are_looked_at(monkeypatch, tmp_
     assert raised.value.code == 2
 
 
+def test_a_base_url_that_carries_credentials_exits_2_without_echoing_it_and_writes_nothing(
+    monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://alice:s3cret@proxy.example.test")
+    root = _shipped_copy(tmp_path)
+    assert run.main(["--agent", "security_examiner", "--runs", "1"], evals_dir=root) == 2
+    error = capsys.readouterr().err
+    assert error.startswith("evals.run: ANTHROPIC_BASE_URL must not carry a username or password")
+    assert "s3cret" not in error
+    assert not (root / "results").exists()
+    assert not (root / ".runs").exists()
+
+
 def test_missing_credentials_exit_2_with_a_message_and_no_request_or_results(monkeypatch, tmp_path, capsys):
     def refuse():
         raise NoCredentialsError("no Anthropic credentials")

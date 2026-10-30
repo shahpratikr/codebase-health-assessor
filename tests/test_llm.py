@@ -10,6 +10,8 @@ import anthropic
 import httpx2
 import jsonschema
 import pytest
+from anthropic import _client as sdk_client
+from anthropic._models import FinalRequestOptions
 from anthropic.resources.beta.messages import Messages
 from anthropic.types.anthropic_beta_param import AnthropicBetaParam
 from anthropic.types.beta import BetaMessage
@@ -422,19 +424,13 @@ def no_credentials(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
 
-def test_make_client_uses_two_sdk_retries(no_credentials, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    client = llm.make_client()
-    assert isinstance(client, anthropic.Anthropic)
-    assert client.max_retries == 2
+def _auth_headers(client):
+    # The SDK merges its headers per request, so only a built request shows which ones go out.
+    request = client._build_request(FinalRequestOptions.construct(method="post", url="/v1/messages"))
+    return {name: value for name, value in request.headers.items() if name in ("x-api-key", "authorization")}
 
 
-def test_make_client_accepts_an_auth_token(no_credentials, monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "test-token")
-    assert llm.make_client().auth_token == "test-token"
-
-
-def test_make_client_accepts_a_credentials_provider(no_credentials, monkeypatch, tmp_path):
+def _set_federation_env(monkeypatch, tmp_path):
     token_file = tmp_path / "identity-token"
     token_file.write_text("header.payload.signature")
     for name, value in {
@@ -444,22 +440,117 @@ def test_make_client_accepts_a_credentials_provider(no_credentials, monkeypatch,
         "ANTHROPIC_IDENTITY_TOKEN_FILE": str(token_file),
     }.items():
         monkeypatch.setenv(name, value)
+
+
+def _refuse_credential_lookups(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("the SDK looked for credentials beside the key")
+
+    for name in ("static_credential_from_env", "default_credentials"):
+        monkeypatch.setattr(sdk_client, name, refuse)
+
+
+def test_make_client_uses_two_sdk_retries(no_credentials, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     client = llm.make_client()
-    assert (client.api_key, client.auth_token) == (None, None)
-    assert client.credentials is not None
+    assert isinstance(client, anthropic.Anthropic)
+    assert client.max_retries == 2
 
 
-def test_make_client_fails_fast_without_credentials(no_credentials):
-    with pytest.raises(llm.NoCredentialsError, match="^no Anthropic credentials: set ANTHROPIC_API_KEY") as raised:
+def test_make_client_sends_the_key_as_x_api_key_and_no_authorization_header(no_credentials, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert _auth_headers(llm.make_client()) == {"x-api-key": "test-key"}
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("ANTHROPIC_AUTH_TOKEN", "test-token"), ("ANTHROPIC_PROFILE", "no-such-profile")]
+)
+def test_make_client_ignores_other_credentials_set_beside_the_key(no_credentials, monkeypatch, name, value):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv(name, value)
+    _refuse_credential_lookups(monkeypatch)
+    assert _auth_headers(llm.make_client()) == {"x-api-key": "test-key"}
+
+
+def test_make_client_ignores_a_credentials_provider_set_beside_the_key(no_credentials, monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    _set_federation_env(monkeypatch, tmp_path)
+    _refuse_credential_lookups(monkeypatch)
+    assert _auth_headers(llm.make_client()) == {"x-api-key": "test-key"}
+
+
+def test_make_client_keeps_its_auth_headers_over_custom_headers_that_spell_each_name_once(no_credentials, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    # Two spellings of one name in this variable still beat the key: the SDK merges them case-sensitively.
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "authorization: Bearer other\nX-API-Key: other")
+    assert _auth_headers(llm.make_client()) == {"x-api-key": "test-key"}
+
+
+def test_make_client_reads_the_key_through_config(no_credentials, monkeypatch):
+    monkeypatch.setattr(config, "anthropic_api_key", lambda: "from-config")
+    assert _auth_headers(llm.make_client()) == {"x-api-key": "from-config"}
+
+
+def test_make_client_follows_no_redirects(no_credentials, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    # httpx2 strips only Authorization when a redirect leaves the origin, so a followed one would carry x-api-key along.
+    assert llm.make_client()._client.follow_redirects is False
+
+
+def test_make_client_keeps_the_sdk_default_http_client_settings(no_credentials, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    client, default = llm.make_client(), anthropic.Anthropic()
+    # A plain httpx2.Client would drop the SDK's connection limits and socket options.
+    assert isinstance(client._client, anthropic.DefaultHttpxClient)
+    assert client.timeout == default.timeout
+    assert client._client.timeout == default._client.timeout
+
+
+def test_make_client_honors_anthropic_base_url(no_credentials, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.test")
+    assert llm.make_client().base_url.host == "proxy.example.test"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://alice:s3cret@proxy.example.test",
+        "https://alice@proxy.example.test",
+        "https://:s3cret@proxy.example.test",
+    ],
+)
+def test_make_client_refuses_a_base_url_that_carries_credentials(no_credentials, monkeypatch, url):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", url)
+    with pytest.raises(ValueError, match="^ANTHROPIC_BASE_URL must not carry a username or password") as raised:
+        llm.make_client()
+    assert "alice" not in str(raised.value)
+    assert "s3cret" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"), [("ANTHROPIC_AUTH_TOKEN", "test-token"), ("ANTHROPIC_PROFILE", "some-profile")]
+)
+def test_make_client_refuses_other_credentials_without_the_key(no_credentials, monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(llm.NoCredentialsError, match="^no Anthropic credentials: set ANTHROPIC_API_KEY$"):
+        llm.make_client()
+
+
+def test_make_client_refuses_a_credentials_provider_without_the_key(no_credentials, monkeypatch, tmp_path):
+    _set_federation_env(monkeypatch, tmp_path)
+    with pytest.raises(llm.NoCredentialsError, match="^no Anthropic credentials: set ANTHROPIC_API_KEY$"):
+        llm.make_client()
+
+
+@pytest.mark.parametrize("key", [None, "", "   ", "\n"])
+def test_make_client_fails_fast_without_a_key(no_credentials, monkeypatch, key):
+    if key is not None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", key)
+    with pytest.raises(llm.NoCredentialsError, match="^no Anthropic credentials: set ANTHROPIC_API_KEY$") as raised:
         llm.make_client()
     assert raised.value.__cause__ is None
-
-
-def test_make_client_fails_fast_on_unloadable_credentials(no_credentials, monkeypatch, tmp_path):
-    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path / "empty-config"))
-    with pytest.raises(llm.NoCredentialsError, match="^could not load Anthropic credentials: ") as raised:
-        llm.make_client()
-    assert isinstance(raised.value.__cause__, anthropic.CredentialsError)
 
 
 def test_request_has_only_gateway_keys(fake_anthropic, log):

@@ -128,6 +128,11 @@ def runs_dir() -> Path:
     return Path(os.environ.get("ASSESSOR_RUNS_DIR") or "runs")
 
 
+def anthropic_api_key() -> str | None:
+    """Return the key named by ANTHROPIC_API_KEY without surrounding whitespace, or None when unset or blank."""
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
+
+
 def osv_replay() -> Path | None:
     """Return the OSV replay file named by ASSESSOR_OSV_REPLAY, or None (query live OSV) when unset or empty."""
     value = os.environ.get("ASSESSOR_OSV_REPLAY")
