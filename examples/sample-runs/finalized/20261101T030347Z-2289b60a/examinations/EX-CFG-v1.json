@@ -1,0 +1,45 @@
+{
+  "workflow": "security_examiner",
+  "step": "insecure_config",
+  "summary": "app.py has three insecure settings: Flask debug mode on while bound to all interfaces, TLS verification off on a payments call that carries a bearer token, and wildcard CORS with credentials allowed. config.py has no insecure settings for this step. I did not read README.md, package.json or requirements.txt.",
+  "findings": [
+    {
+      "id": "CFG-1",
+      "title": "Flask debug mode enabled on all interfaces",
+      "severity": "high",
+      "category": "debug-mode",
+      "file": "app.py",
+      "line": 52,
+      "evidence": "app.run(host=\"0.0.0.0\", port=8080, debug=True) exposes the Werkzeug debugger, which allows code execution, on every interface",
+      "recommendation": "Remove debug=True and run behind a production WSGI server. Control debug through the environment, and bind to 127.0.0.1 or a reverse proxy.",
+      "advisory_ids": []
+    },
+    {
+      "id": "CFG-2",
+      "title": "TLS verification disabled on payments call carrying bearer token",
+      "severity": "high",
+      "category": "tls-verification",
+      "file": "app.py",
+      "line": 40,
+      "evidence": "requests.post(..., headers={\"Authorization\": Bearer ...}, verify=False) sends customer data and a credential without certificate checks",
+      "recommendation": "Remove verify=False so certificates are verified. If a private CA is needed, point verify at its CA bundle.",
+      "advisory_ids": []
+    },
+    {
+      "id": "CFG-3",
+      "title": "Wildcard CORS with credentials allowed",
+      "severity": "high",
+      "category": "cors",
+      "file": "app.py",
+      "line": 18,
+      "evidence": "Access-Control-Allow-Origin set to \"*\" and Access-Control-Allow-Credentials set to \"true\" (line 19) in after_request for all responses",
+      "recommendation": "Restrict the allowed origins to an explicit allowlist of dashboard origins. Do not combine a wildcard origin with credentials.",
+      "advisory_ids": []
+    }
+  ],
+  "limitations": [
+    "README.md, package.json and requirements.txt were not read.",
+    "The service has no Dockerfile or deployment files to check for container settings."
+  ],
+  "challenge_responses": []
+}

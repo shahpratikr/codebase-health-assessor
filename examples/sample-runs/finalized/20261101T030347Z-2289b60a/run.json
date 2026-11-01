@@ -1,0 +1,12 @@
+{
+  "correlation_id": "20261101T030347Z-2289b60a",
+  "input": {
+    "path": "/Users/pratikshah/applications/codebase-health-assessor/examples/sample-client-repo",
+    "kind": "directory"
+  },
+  "started_at": "2026-11-01T03:03:47.179Z",
+  "finished_at": "2026-11-01T03:06:16.725Z",
+  "status": "finalized",
+  "gates": [],
+  "halt_reason": null
+}

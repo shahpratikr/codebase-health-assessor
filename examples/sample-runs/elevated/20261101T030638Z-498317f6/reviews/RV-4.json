@@ -1,0 +1,25 @@
+{
+  "target_id": "EX-HYG-v1",
+  "verdict": "challenge",
+  "summary": "I opened package.json and requirements.txt. Both findings cite the right lines, quote them accurately, and are rated medium as the checklist says. I also found no package-lock.json, yarn.lock or constraints.txt. The only defect is a miscount in the summary.",
+  "challenges": [
+    {
+      "id": "RV-4-C1",
+      "finding_id": "",
+      "lens": "challenge",
+      "severity": "minor",
+      "claim": "The summary says three runtime dependencies are unpinned, but it names only two (express and gunicorn), and only two findings exist.",
+      "evidence_checked": [
+        {
+          "file": "package.json",
+          "line": 7
+        },
+        {
+          "file": "requirements.txt",
+          "line": 3
+        }
+      ],
+      "rationale": "package.json pins dayjs and lodash exactly, and only express is \"*\". requirements.txt pins Flask and requests and leaves only gunicorn open. That makes two unpinned dependencies, not three, so the summary contradicts both its own text and the findings."
+    }
+  ]
+}

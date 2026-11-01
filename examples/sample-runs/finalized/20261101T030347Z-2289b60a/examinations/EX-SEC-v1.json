@@ -1,0 +1,33 @@
+{
+  "workflow": "security_examiner",
+  "step": "secrets",
+  "summary": "config.py holds the AWS documentation example key pair as literals. The pair is rated critical, as the checklist requires. No other hard-coded secrets turned up in the five files in the repository.",
+  "findings": [
+    {
+      "id": "SEC-1",
+      "title": "AWS example access key ID hard-coded",
+      "severity": "critical",
+      "category": "aws-key",
+      "file": "config.py",
+      "line": 4,
+      "evidence": "AWS_ACCESS_KEY_ID = \"AKIA...\" (the AWS documentation example key ID, ending in EXAMPLE)",
+      "recommendation": "Remove the literal and read the key from the environment or a secret store, or use an IAM role. Rotate it if it was ever real.",
+      "advisory_ids": []
+    },
+    {
+      "id": "SEC-2",
+      "title": "AWS example secret access key hard-coded",
+      "severity": "critical",
+      "category": "aws-key",
+      "file": "config.py",
+      "line": 5,
+      "evidence": "AWS_SECRET_ACCESS_KEY = \"<redacted:wJa\u2026>\" (the AWS documentation example secret)",
+      "recommendation": "Remove the literal and load the secret from the environment or a secret store. Rotate it if it was ever real.",
+      "advisory_ids": []
+    }
+  ],
+  "limitations": [
+    "The repository has only five files, and I read all of them. This step covers secrets only, so the debug mode, wildcard CORS and verify=False in app.py are not reported here."
+  ],
+  "challenge_responses": []
+}

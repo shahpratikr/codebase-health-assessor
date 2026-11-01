@@ -1,0 +1,6 @@
+{
+  "target_id": "EX-SEC-v1",
+  "verdict": "pass",
+  "summary": "I read config.py, requirements.txt and app.py. Lines 4 and 5 of config.py hold the AWS documentation example key pair as literals. The checklist rates that pair critical, so both findings are correct. The payments token is read from os.environ at app.py line 39, as the summary says.",
+  "challenges": []
+}

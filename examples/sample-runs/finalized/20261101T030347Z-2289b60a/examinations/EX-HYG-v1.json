@@ -1,0 +1,34 @@
+{
+  "workflow": "dependency_examiner",
+  "step": "dependency_hygiene",
+  "summary": "Two manifests were found, package.json and requirements.txt, and neither has a lockfile. Two runtime dependencies are unpinned: express with `*` and gunicorn with no version. Pinned versions were not checked for vulnerabilities, because that belongs to a different step.",
+  "findings": [
+    {
+      "id": "HYG-1",
+      "title": "express uses wildcard version with no lockfile",
+      "severity": "medium",
+      "category": "unpinned",
+      "file": "package.json",
+      "line": 7,
+      "evidence": "\"express\": \"*\" \u2014 any version is accepted and no lockfile exists beside package.json to pin it",
+      "recommendation": "Pin express to a specific version or a bounded range, and commit a lockfile (package-lock.json).",
+      "advisory_ids": []
+    },
+    {
+      "id": "HYG-2",
+      "title": "gunicorn has no version constraint and no lockfile",
+      "severity": "medium",
+      "category": "unpinned",
+      "file": "requirements.txt",
+      "line": 3,
+      "evidence": "gunicorn \u2014 no version specified, and no lockfile or constraints file pins it",
+      "recommendation": "Pin gunicorn with an exact version (gunicorn==X.Y.Z) and consider a hash-locked requirements file.",
+      "advisory_ids": []
+    }
+  ],
+  "limitations": [
+    "Known vulnerabilities were not examined, because this step covers hygiene only.",
+    "No lockfile exists for npm or PyPI, so transitive dependencies are unpinned and were not reviewed."
+  ],
+  "challenge_responses": []
+}

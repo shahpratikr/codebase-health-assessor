@@ -1,0 +1,46 @@
+{
+  "workflow": "security_examiner",
+  "step": "insecure_config",
+  "summary": "app.py has three insecure settings: Flask debug mode on while bound to all interfaces, TLS verification off on a payment call that carries a bearer token, and wildcard CORS with credentials allowed. I read every file that holds code, app.py and config.py. I did not read package.json, requirements.txt or README.md.",
+  "findings": [
+    {
+      "id": "CFG-1",
+      "title": "Flask debug mode enabled on all interfaces",
+      "severity": "high",
+      "category": "debug-mode",
+      "file": "app.py",
+      "line": 52,
+      "evidence": "app.run(host=\"0.0.0.0\", port=8080, debug=True) exposes the Werkzeug debugger, which allows code execution, on every interface.",
+      "recommendation": "Remove debug=True and run behind a production WSGI server such as gunicorn. Bind to 127.0.0.1 or a reverse proxy, and control debug through the environment in development only.",
+      "advisory_ids": []
+    },
+    {
+      "id": "CFG-2",
+      "title": "TLS verification disabled on payment call carrying bearer token",
+      "severity": "high",
+      "category": "tls-verification",
+      "file": "app.py",
+      "line": 40,
+      "evidence": "requests.post(... headers Authorization Bearer PAYMENTS_TOKEN, verify=False) sends customer and payment data and the token without certificate validation.",
+      "recommendation": "Remove verify=False so certificates are validated. If a private CA is used, point verify to its CA bundle.",
+      "advisory_ids": []
+    },
+    {
+      "id": "CFG-3",
+      "title": "Wildcard CORS with credentials allowed",
+      "severity": "high",
+      "category": "cors",
+      "file": "app.py",
+      "line": 18,
+      "evidence": "Access-Control-Allow-Origin: * is set together with Access-Control-Allow-Credentials: true (line 19) on all responses.",
+      "recommendation": "Allow only an explicit list of trusted origins, and echo an origin only if it is on that list. Do not combine credentials with a wildcard.",
+      "advisory_ids": []
+    }
+  ],
+  "limitations": [
+    "package.json, requirements.txt and README.md were not read.",
+    "No Dockerfile or deployment files exist in the repository, so container settings could not be checked.",
+    "The orders and charge endpoints have no authentication. This is outside the checklist and I did not report it."
+  ],
+  "challenge_responses": []
+}

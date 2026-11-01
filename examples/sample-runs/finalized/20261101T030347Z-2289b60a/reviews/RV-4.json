@@ -1,0 +1,6 @@
+{
+  "target_id": "EX-HYG-v1",
+  "verdict": "pass",
+  "summary": "I read package.json and requirements.txt. HYG-1 and HYG-2 are both accurate: express is `*` at package.json line 7, and gunicorn has no version at requirements.txt line 3. Both are rated medium, which matches the checklist for an unpinned runtime dependency with no lockfile. The step stayed in scope, since vulnerabilities such as lodash 4.17.15 and requests 2.19.0 were left out.",
+  "challenges": []
+}

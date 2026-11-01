@@ -1,0 +1,6 @@
+{
+  "target_id": "EX-CFG-v1",
+  "verdict": "pass",
+  "summary": "I read app.py and config.py in full. All three findings match the cited lines: debug=True with host 0.0.0.0 at line 52, verify=False on the bearer-token payment call at line 40, and wildcard CORS with credentials at lines 18 and 19. Each is rated high, which matches the checklist's scale. The hardcoded AWS keys in config.py belong to a secrets step, so leaving them out of this step is correct.",
+  "challenges": []
+}

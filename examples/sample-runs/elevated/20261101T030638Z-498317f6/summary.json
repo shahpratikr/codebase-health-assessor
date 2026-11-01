@@ -1,0 +1,59 @@
+{
+  "correlation_id": "20261101T030638Z-498317f6",
+  "agents": {
+    "coordinator": {
+      "llm_calls": 11,
+      "input_tokens": 81324,
+      "output_tokens": 4217,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.204818,
+      "unpriced_calls": 0
+    },
+    "security_examiner": {
+      "llm_calls": 6,
+      "input_tokens": 32473,
+      "output_tokens": 1709,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.082036,
+      "unpriced_calls": 0
+    },
+    "dependency_examiner": {
+      "llm_calls": 17,
+      "input_tokens": 95881,
+      "output_tokens": 7257,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.264332,
+      "unpriced_calls": 0
+    },
+    "adversarial_reviewer": {
+      "llm_calls": 19,
+      "input_tokens": 140845,
+      "output_tokens": 9045,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.37214,
+      "unpriced_calls": 0
+    },
+    "final_review_writer": {
+      "llm_calls": 3,
+      "input_tokens": 22163,
+      "output_tokens": 5823,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0,
+      "cost_usd": 0.102556,
+      "unpriced_calls": 0
+    }
+  },
+  "total": {
+    "llm_calls": 56,
+    "input_tokens": 372686,
+    "output_tokens": 28051,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cost_usd": 1.025882,
+    "unpriced_calls": 0
+  }
+}

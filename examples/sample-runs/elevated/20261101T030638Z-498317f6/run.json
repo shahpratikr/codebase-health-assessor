@@ -1,0 +1,19 @@
+{
+  "correlation_id": "20261101T030638Z-498317f6",
+  "input": {
+    "path": "/Users/pratikshah/applications/codebase-health-assessor/examples/sample-client-repo",
+    "kind": "directory"
+  },
+  "started_at": "2026-11-01T03:06:38.654Z",
+  "finished_at": "2026-11-01T03:10:35.087Z",
+  "status": "pending_human",
+  "gates": [
+    {
+      "gate": "SUBSTANCE_ELEVATION",
+      "subjects": [
+        "final_review_writer"
+      ]
+    }
+  ],
+  "halt_reason": null
+}

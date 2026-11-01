@@ -1,0 +1,66 @@
+{
+  "workflow": "dependency_examiner",
+  "step": "known_vulnerabilities",
+  "summary": "Three of the four exact-pinned dependencies have published advisories: lodash 4.17.15, requests 2.19.0 and Flask 3.0.3. dayjs 1.11.13 has none. Neither manifest has a lockfile, so the pinned manifest versions were queried.",
+  "findings": [
+    {
+      "id": "VULN-1",
+      "title": "lodash 4.17.15 has multiple known vulnerabilities",
+      "severity": "high",
+      "category": "known-vulnerability",
+      "file": "package.json",
+      "line": 8,
+      "evidence": "\"lodash\": \"4.17.15\". OSV returned 6 advisories. The worst are command injection (GHSA-35jh-r3h4-6jhm, CVSS 3.1 base 7.2) and code injection via _.template (GHSA-r5fr-rjxr-66jc, CVSS 3.1 base 8.1). The others are prototype pollution (GHSA-p6mc-m468-83gw, GHSA-f23m-r3pf-42rh, GHSA-xxjr-mmjv-4gpg) and ReDoS (GHSA-29mw-wpgm-hmr9).",
+      "recommendation": "Upgrade lodash to 4.18.0. That is the lowest fixed version that covers all six advisories. 4.17.21 fixes only some of them.",
+      "advisory_ids": [
+        "GHSA-29mw-wpgm-hmr9",
+        "GHSA-35jh-r3h4-6jhm",
+        "GHSA-f23m-r3pf-42rh",
+        "GHSA-p6mc-m468-83gw",
+        "GHSA-r5fr-rjxr-66jc",
+        "GHSA-xxjr-mmjv-4gpg"
+      ]
+    },
+    {
+      "id": "VULN-2",
+      "title": "requests 2.19.0 has multiple known vulnerabilities",
+      "severity": "high",
+      "category": "known-vulnerability",
+      "file": "requirements.txt",
+      "line": 2,
+      "evidence": "requests==2.19.0. OSV returned 11 advisories. The worst is credential exposure on an https-to-http redirect (GHSA-x84v-xcm2-53pg / PYSEC-2018-28, CVSS 3.1 base 7.5). The others include a .netrc credential leak, a Proxy-Authorization header leak, verify=False session reuse, and insecure temp file reuse.",
+      "recommendation": "Upgrade requests to 2.33.0 or later. That is the highest of the fixed versions and covers every advisory returned.",
+      "advisory_ids": [
+        "GHSA-9hjg-9r4m-mvj7",
+        "GHSA-9wx4-h78v-vm56",
+        "GHSA-gc5v-m9x4-r6x2",
+        "GHSA-j8r2-6x86-q33q",
+        "GHSA-x84v-xcm2-53pg",
+        "PYSEC-2018-28",
+        "PYSEC-2023-74",
+        "PYSEC-2026-1872",
+        "PYSEC-2026-1873",
+        "PYSEC-2026-2275"
+      ]
+    },
+    {
+      "id": "VULN-3",
+      "title": "Flask 3.0.3 session missing Vary: Cookie header",
+      "severity": "medium",
+      "category": "known-vulnerability",
+      "file": "requirements.txt",
+      "line": 1,
+      "evidence": "Flask==3.0.3. GHSA-68rp-wp8r-4726 / PYSEC-2026-2151: the session does not add a Vary: Cookie header in some access paths. The CVSS v3 vector (PYSEC-2026-2151) gives a base score of 4.3. The CVSS v4 vector on GHSA-68rp-wp8r-4726 is low, but the worst advisory sets the rating.",
+      "recommendation": "Upgrade Flask to 3.1.3 or later.",
+      "advisory_ids": [
+        "GHSA-68rp-wp8r-4726",
+        "PYSEC-2026-2151"
+      ]
+    }
+  ],
+  "limitations": [
+    "express (\"*\", package.json line 7) and gunicorn (unpinned, requirements.txt line 3) have no exact version, so they were not queried. The dependency_hygiene step covers them.",
+    "No lockfiles exist, so transitive dependencies were not examined."
+  ],
+  "challenge_responses": []
+}

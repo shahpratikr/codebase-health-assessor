@@ -1,0 +1,78 @@
+{
+  "workflow": "dependency_examiner",
+  "step": "known_vulnerabilities",
+  "summary": "Three of the four pinned packages have published advisories: lodash 4.17.15, requests 2.19.0 and Flask 3.0.3. dayjs 1.11.13 has none. I re-queried requests: OSV returned 10 advisories, not 11, so the earlier count of 11 was wrong and all 10 IDs are now listed.",
+  "findings": [
+    {
+      "id": "VULN-1",
+      "title": "lodash 4.17.15 has 6 known advisories",
+      "severity": "high",
+      "category": "known-vulnerability",
+      "file": "package.json",
+      "line": 8,
+      "evidence": "\"lodash\": \"4.17.15\". OSV returned 6 advisories. The worst is GHSA-r5fr-rjxr-66jc, code injection via _.template imports key names (CVSS v3 AV:N/AC:H/PR:N, C/I/A High, base 8.1). GHSA-35jh-r3h4-6jhm, command injection, scores 7.2. Also returned: prototype pollution (GHSA-p6mc-m468-83gw, GHSA-f23m-r3pf-42rh, GHSA-xxjr-mmjv-4gpg) and ReDoS (GHSA-29mw-wpgm-hmr9).",
+      "recommendation": "The lowest fixed version above 4.17.15 is 4.17.19, which fixes only GHSA-p6mc-m468-83gw. 4.17.21 also fixes the ReDoS and command injection advisories. 4.18.0 is the lowest version that fixes all six, including the two 2026 advisories. Upgrade to 4.18.0 or later.",
+      "advisory_ids": [
+        "GHSA-29mw-wpgm-hmr9",
+        "GHSA-35jh-r3h4-6jhm",
+        "GHSA-f23m-r3pf-42rh",
+        "GHSA-p6mc-m468-83gw",
+        "GHSA-r5fr-rjxr-66jc",
+        "GHSA-xxjr-mmjv-4gpg"
+      ]
+    },
+    {
+      "id": "VULN-2",
+      "title": "requests 2.19.0 has 10 known advisories",
+      "severity": "high",
+      "category": "known-vulnerability",
+      "file": "requirements.txt",
+      "line": 2,
+      "evidence": "requests==2.19.0. OSV returned 10 advisories: 5 GHSA entries and 5 PYSEC duplicates of them, covering 5 distinct issues. The worst is GHSA-x84v-xcm2-53pg / PYSEC-2018-28 (CVE-2018-18074), credentials sent in the Authorization header on an https-to-http redirect (CVSS v3 AV:N/AC:L/PR:N/UI:N/C:H, base 7.5). Others: .netrc credential leak, verify=False session bypass, Proxy-Authorization leak, and insecure temp file reuse in extract_zipped_paths.",
+      "recommendation": "The lowest fixed version above 2.19.0 is 2.20.0, which fixes only the CVE-2018-18074 pair. The highest fixed version is 2.33.0, which fixes all 10 advisories. Upgrade to 2.33.0 or later.",
+      "advisory_ids": [
+        "GHSA-9hjg-9r4m-mvj7",
+        "GHSA-9wx4-h78v-vm56",
+        "GHSA-gc5v-m9x4-r6x2",
+        "GHSA-j8r2-6x86-q33q",
+        "GHSA-x84v-xcm2-53pg",
+        "PYSEC-2018-28",
+        "PYSEC-2023-74",
+        "PYSEC-2026-1872",
+        "PYSEC-2026-1873",
+        "PYSEC-2026-2275"
+      ]
+    },
+    {
+      "id": "VULN-3",
+      "title": "Flask 3.0.3 missing Vary: Cookie header advisory",
+      "severity": "medium",
+      "category": "known-vulnerability",
+      "file": "requirements.txt",
+      "line": 1,
+      "evidence": "Flask==3.0.3. GHSA-68rp-wp8r-4726 / PYSEC-2026-2151: the session does not add a Vary: Cookie header when accessed in some ways. The CVSS v3 score for PYSEC-2026-2151 is 4.3 (medium). The v4 vector on GHSA-68rp-wp8r-4726 has VC:L only, so its rating is estimated as medium.",
+      "recommendation": "Upgrade to Flask 3.1.3 or later, the lowest fixed version above 3.0.3.",
+      "advisory_ids": [
+        "GHSA-68rp-wp8r-4726",
+        "PYSEC-2026-2151"
+      ]
+    }
+  ],
+  "limitations": [
+    "express (\"*\", package.json line 7) and gunicorn (no version, requirements.txt line 3) have no exact version, so I could not query them. The dependency_hygiene step covers them.",
+    "No lockfile exists, so versions come from the manifests only.",
+    "dayjs 1.11.13 returned no advisories."
+  ],
+  "challenge_responses": [
+    {
+      "challenge_id": "RV-3-C1",
+      "response": "upheld",
+      "rationale": "I re-queried requests 2.19.0. OSV returned 10 advisories, not 11. The earlier count was wrong, and advisory_ids now lists all 10 returned IDs."
+    },
+    {
+      "challenge_id": "RV-3-C2",
+      "response": "upheld",
+      "rationale": "The recommendations now name the lowest fixed version above the pinned one: 4.17.19 for lodash and 2.20.0 for requests. Each also names the version that fixes every advisory: 4.18.0 and 2.33.0."
+    }
+  ]
+}

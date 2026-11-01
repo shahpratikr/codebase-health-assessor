@@ -1,0 +1,35 @@
+{
+  "target_id": "DR-v3",
+  "verdict": "challenge",
+  "summary": "I checked the draft against the four accepted examinations and the coordinator's dispositions. I also opened app.py and requirements.txt: the cited lines for CFG-1, CFG-2, CFG-3, VULN-2, VULN-3 and HYG-2 are correct. Severities, counts, advisory details and the executive summary match the input and add no new findings. One minor wording problem remains, in the known_vulnerabilities limitations.",
+  "challenges": [
+    {
+      "id": "RV-8-C1",
+      "finding_id": "",
+      "lens": "detect",
+      "severity": "minor",
+      "claim": "The known_vulnerabilities limitations end with 'Advisory details were not independently re-verified outside this examination.' That sentence is not in the examination's limitations. It restates the RV-5 reviewer note, 'I could not query OSV'.",
+      "evidence_checked": [
+        {
+          "file": "requirements.txt",
+          "line": 2
+        }
+      ],
+      "rationale": "The disposition says to leave out review-process commentary such as what the reviewer could or could not query. Challenge RV-7-C1 asked for the same fix. The examination's own limitations only say that express and gunicorn were not queried and that no lockfile exists. The reworded sentence still carries the review caveat into client-facing text, so it should be removed."
+    },
+    {
+      "id": "RV-8-C2",
+      "finding_id": "",
+      "lens": "detect",
+      "severity": "minor",
+      "claim": "The insecure_config section says the unauthenticated endpoints 'deserve attention'. The examination did not make that judgment. It said the point was outside the checklist and left it unreported.",
+      "evidence_checked": [
+        {
+          "file": "app.py",
+          "line": 36
+        }
+      ],
+      "rationale": "The orders and charge routes at app.py lines 23 and 31 do lack authentication, so the claim is true. But the draft may only explain the reviewed findings, and this is the writer's own addition. The attribution to the examination is correct."
+    }
+  ]
+}

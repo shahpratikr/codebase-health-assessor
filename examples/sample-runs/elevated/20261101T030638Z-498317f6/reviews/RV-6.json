@@ -1,0 +1,25 @@
+{
+  "target_id": "DR-v1",
+  "verdict": "challenge",
+  "summary": "I compared the draft with the accepted examinations, the disposition and the reviews. I also read config.py and app.py. The finding IDs, severities, line numbers, advisory details and limitations all match the input, and the draft adds no findings. One minor wording problem remains.",
+  "challenges": [
+    {
+      "id": "RV-6-C1",
+      "finding_id": "",
+      "lens": "challenge",
+      "severity": "minor",
+      "claim": "The dependency_hygiene section tells the client that 'An earlier draft of the summary said three, but the findings name two'. That is internal review history, and it confuses a client-facing report.",
+      "evidence_checked": [
+        {
+          "file": "requirements.txt",
+          "line": 3
+        },
+        {
+          "file": "package.json",
+          "line": 7
+        }
+      ],
+      "rationale": "The disposition does say the three-versus-two mismatch was cosmetic and that the two findings (HYG-1, HYG-2) are authoritative. The prose should state only that two runtime dependencies are unpinned, without referring to a draft the client never saw. The facts themselves are correct."
+    }
+  ]
+}

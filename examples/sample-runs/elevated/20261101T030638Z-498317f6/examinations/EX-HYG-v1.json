@@ -1,0 +1,34 @@
+{
+  "workflow": "dependency_examiner",
+  "step": "dependency_hygiene",
+  "summary": "Two manifests (package.json and requirements.txt) exist, and neither has a lockfile. Three runtime dependencies are unpinned: express and gunicorn have no version constraint, so builds can't be reproduced.",
+  "findings": [
+    {
+      "id": "HYG-1",
+      "title": "express unpinned (\"*\") with no lockfile",
+      "severity": "medium",
+      "category": "unpinned",
+      "file": "package.json",
+      "line": 7,
+      "evidence": "\"express\": \"*\" \u2014 any version is accepted and no npm lockfile is committed.",
+      "recommendation": "Pin express to a specific version, or a reviewed range, and commit a package-lock.json.",
+      "advisory_ids": []
+    },
+    {
+      "id": "HYG-2",
+      "title": "gunicorn has no version specifier",
+      "severity": "medium",
+      "category": "unpinned",
+      "file": "requirements.txt",
+      "line": 3,
+      "evidence": "`gunicorn` is declared with no version, and no pip lockfile or constraints file exists.",
+      "recommendation": "Pin gunicorn with `==` to a tested version, or use a lock or constraints file.",
+      "advisory_ids": []
+    }
+  ],
+  "limitations": [
+    "Hygiene only: no OSV lookups were made, so known vulnerabilities were not checked in this step.",
+    "The other dependencies are pinned exactly (dayjs 1.11.13, lodash 4.17.15, Flask 3.0.3, requests 2.19.0). They raise no hygiene findings, but the known_vulnerabilities step should check them."
+  ],
+  "challenge_responses": []
+}

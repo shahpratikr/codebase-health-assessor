@@ -1,0 +1,77 @@
+{
+  "workflow": "dependency_examiner",
+  "step": "known_vulnerabilities",
+  "summary": "I queried OSV for all four exact pins. Three have advisories: lodash 4.17.15 and requests 2.19.0 (both high) and Flask 3.0.3 (medium). dayjs 1.11.13 has none.",
+  "findings": [
+    {
+      "id": "VULN-1",
+      "title": "lodash 4.17.15 has 6 known advisories",
+      "severity": "high",
+      "category": "known-vulnerability",
+      "file": "package.json",
+      "line": 8,
+      "evidence": "\"lodash\": \"4.17.15\". OSV returned 6 advisories. The worst is GHSA-r5fr-rjxr-66jc, code injection via _.template imports key names (CVSS v3 AV:N/AC:H, C/I/A High, base 8.1). GHSA-35jh-r3h4-6jhm is command injection (7.2). GHSA-p6mc-m468-83gw and GHSA-xxjr-mmjv-4gpg are prototype pollution. GHSA-29mw-wpgm-hmr9 is ReDoS. GHSA-f23m-r3pf-42rh is prototype pollution via _.unset and _.omit.",
+      "recommendation": "The lowest fixed version above 4.17.15 is 4.17.19, but it only fixes the prototype pollution advisory GHSA-p6mc-m468-83gw. Upgrading to 4.17.21 also fixes the ReDoS and command injection advisories. Upgrading to 4.18.0 (optional, higher) closes all 6, including the code injection advisory, which is the worst one. Note that OSV lists 4.17.23 as the fix for GHSA-xxjr-mmjv-4gpg.",
+      "advisory_ids": [
+        "GHSA-29mw-wpgm-hmr9",
+        "GHSA-35jh-r3h4-6jhm",
+        "GHSA-f23m-r3pf-42rh",
+        "GHSA-p6mc-m468-83gw",
+        "GHSA-r5fr-rjxr-66jc",
+        "GHSA-xxjr-mmjv-4gpg"
+      ]
+    },
+    {
+      "id": "VULN-2",
+      "title": "requests 2.19.0 has 10 known advisories",
+      "severity": "high",
+      "category": "known-vulnerability",
+      "file": "requirements.txt",
+      "line": 2,
+      "evidence": "requests==2.19.0. OSV returned 10 entries, which cover 5 distinct issues, each listed under both a GHSA and a PYSEC ID. The worst is CVE-2018-18074 (GHSA-x84v-xcm2-53pg / PYSEC-2018-28), where credentials are sent to an http URI after a redirect (CVSS v3 AV:N/AC:L/PR:N/UI:N/C:H, base 7.5). The others are the Proxy-Authorization leak, the .netrc credential leak, Session verify=False persisting, and insecure temp file reuse.",
+      "recommendation": "The lowest fixed version above 2.19.0 is 2.20.0, but it only fixes CVE-2018-18074. Upgrading to 2.33.0 (optional, higher) fixes all of the advisories returned.",
+      "advisory_ids": [
+        "GHSA-9hjg-9r4m-mvj7",
+        "GHSA-9wx4-h78v-vm56",
+        "GHSA-gc5v-m9x4-r6x2",
+        "GHSA-j8r2-6x86-q33q",
+        "GHSA-x84v-xcm2-53pg",
+        "PYSEC-2018-28",
+        "PYSEC-2023-74",
+        "PYSEC-2026-1872",
+        "PYSEC-2026-1873",
+        "PYSEC-2026-2275"
+      ]
+    },
+    {
+      "id": "VULN-3",
+      "title": "Flask 3.0.3 has a session caching advisory",
+      "severity": "medium",
+      "category": "known-vulnerability",
+      "file": "requirements.txt",
+      "line": 1,
+      "evidence": "Flask==3.0.3. GHSA-68rp-wp8r-4726 / PYSEC-2026-2151: the session does not add a Vary: Cookie header in some access patterns. The CVSS v3 vector on PYSEC-2026-2151 (AV:N/AC:L/PR:N/UI:R/C:L) scores 4.3. The v4 vector on GHSA-68rp-wp8r-4726 has VC:L as its highest impact, so its estimated rating is also medium.",
+      "recommendation": "Upgrade to Flask 3.1.3, the fixed version.",
+      "advisory_ids": [
+        "GHSA-68rp-wp8r-4726",
+        "PYSEC-2026-2151"
+      ]
+    }
+  ],
+  "limitations": [
+    "express (\"*\") in package.json and gunicorn (no version) in requirements.txt have no exact version, so I did not query them. The dependency_hygiene step covers them.",
+    "There is no lockfile, so the versions checked are the manifest pins."
+  ],
+  "challenge_responses": [
+    {
+      "challenge_id": "RV-3-C1",
+      "response": "rejected",
+      "rationale": "I re-queried OSV for requests 2.19.0. It returned 10 advisories, not 11, and all 10 IDs are in advisory_ids. The earlier count of 11 was wrong, so no ID is missing. I corrected the evidence to say 10."
+    },
+    {
+      "challenge_id": "RV-3-C2",
+      "response": "upheld",
+      "rationale": "Checklist step 6 asks for the lowest fixed version above the pinned one. The recommendations now give 4.17.19 for lodash and 2.20.0 for requests as the lowest. They name 4.17.21, 4.18.0 and 2.33.0 as optional higher targets that close more of the advisories."
+    }
+  ]
+}
