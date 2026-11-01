@@ -246,6 +246,69 @@ def test_severity_check_detects_a_planted_violation():
     assert _unrated("Rate a leaked key critical, and a test key highly sensitive.") == ["high", "medium", "low"]
 
 
+PAIR_NAME = "the AWS documentation example key pair"
+PAIR_BULLET = (
+    f"- {PAIR_NAME}, whose access key ID ends in `EXAMPLE`, or either half of it alone: report it as a cloud key "
+    "like any other, rated critical; the medium rule for examples below does not lower it"
+)
+PAIR_EXCEPTION = f"({PAIR_NAME} is not one: see What counts)"
+PAIR_RULES = (
+    f"What counts:\n{PAIR_BULLET}\n"
+    f"What does not count, so do not report it:\n- an obvious placeholder: `xxx` {PAIR_EXCEPTION}\n"
+)
+
+
+def _example_pair_problems(section):
+    counts, _, rest = section.partition("What does not count")
+    placeholder = [line for line in rest.splitlines() if line.startswith("- an obvious placeholder")]
+    problems = []
+    counted = [line for line in counts.splitlines() if line.startswith(f"- {PAIR_NAME}")]
+    wording = ("either half of it alone", "report it as a cloud key", "rated critical", "does not lower it")
+    if not any(all(phrase in line for phrase in wording) for line in counted):
+        problems.append("not counted as a critical cloud key")
+    if not any(line.endswith(PAIR_EXCEPTION) for line in placeholder):
+        problems.append("not excepted from the placeholder bullet")
+    if SECRET in section or "EXAMPLEKEY" in section:
+        problems.append("holds a literal example value")
+    return problems
+
+
+def test_secrets_section_counts_the_aws_example_pair_as_a_critical_cloud_key_not_a_placeholder():
+    assert _example_pair_problems(runner.checklist_section(MANIFESTS["security_examiner"], "secrets")) == []
+    assert _example_pair_problems(PAIR_RULES) == []
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        PAIR_RULES.replace(f"What counts:\n{PAIR_BULLET}\n", "What counts:\n").replace(
+            "do not report it:\n", f"do not report it:\n{PAIR_BULLET}\n"
+        ),
+        PAIR_RULES.replace("report it as a cloud key like any other, rated critical", "ignore it"),
+        PAIR_RULES.replace(", rated critical", ""),
+        PAIR_RULES.replace("; the medium rule for examples below does not lower it", ""),
+        PAIR_RULES.replace(", or either half of it alone", ""),
+        PAIR_RULES.replace(f"What counts:\n{PAIR_BULLET}\n", f"{PAIR_BULLET[2:]}\nWhat counts:\n"),
+        PAIR_RULES.replace("see What counts)", "see What counts), so skip it"),
+        PAIR_RULES + f"- {SECRET}\n",
+        "",
+    ],
+    ids=[
+        "bullet moved",
+        "instruction reversed",
+        "rating dropped",
+        "override dropped",
+        "halves dropped",
+        "not a list item",
+        "exception softened",
+        "literal written",
+        "empty",
+    ],
+)
+def test_example_pair_check_detects_a_planted_violation(planted):
+    assert _example_pair_problems(planted)
+
+
 def test_reviewer_prompt_is_organised_under_challenge_catch_detect_and_block():
     assert _lens_headings(_read(MANIFESTS["adversarial_reviewer"]["prompt"])) == LENS_HEADINGS
 

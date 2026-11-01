@@ -10,6 +10,7 @@ Look for credentials written into the working tree. Check these first, in this o
 
 What counts:
 - cloud keys: AWS access key IDs (`AKIA...`, `ASIA...`) and their 40-character secret keys, GCP service-account JSON, Azure connection strings
+- the AWS documentation example key pair, whose access key ID ends in `EXAMPLE`, or either half of it alone: report it as a cloud key like any other, rated critical; the medium rule for examples below does not lower it
 - private key blocks
 - a password, secret, token or API key assigned a literal value: `password = "..."`, `API_KEY: ...`, `"token": "..."`
 - service tokens with a known prefix: `sk-`, `ghp_`, `xoxb-`, `AIza`
@@ -18,7 +19,7 @@ What counts:
 
 What does not count, so do not report it:
 - a value read from the environment or a secret store: `os.environ["X"]`, `os.getenv("X")`, `process.env.X`, `${X}`
-- an obvious placeholder: `changeme`, `<your-key>`, `xxx`, `TODO`, an empty string
+- an obvious placeholder: `changeme`, `<your-key>`, `xxx`, `TODO`, an empty string (the AWS documentation example key pair is not one: see What counts)
 - a hash, a public key or a commit SHA
 
 Severity:
