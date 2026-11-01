@@ -1,0 +1,246 @@
+{
+  "agent": "dependency_examiner",
+  "model": "claude-sonnet-5-5",
+  "effort": "medium",
+  "prompt_sha256": "ae8ee4d8d14c84cd4bbdb1686cf190038a7ffa353235cbfa9162fdc045c6f3e8",
+  "skills_sha256": "de283e184539c65f59ef6a39fe4f6fe5487c7288b40eb8054c78994d81101328",
+  "generated_at": "2026-11-01T02:54:50.660Z",
+  "runs": 3,
+  "cases": [
+    {
+      "case_id": "D1",
+      "run": 1,
+      "scores": {
+        "vuln_recall": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 24939,
+      "output_tokens": 2239,
+      "cost_usd": 0.072268,
+      "error": null
+    },
+    {
+      "case_id": "D2",
+      "run": 1,
+      "scores": {
+        "vuln_recall": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 23894,
+      "output_tokens": 2196,
+      "cost_usd": 0.069748,
+      "error": null
+    },
+    {
+      "case_id": "D3",
+      "run": 1,
+      "scores": {
+        "hygiene_recall": 1.0
+      },
+      "passed": true,
+      "input_tokens": 14175,
+      "output_tokens": 921,
+      "cost_usd": 0.03756,
+      "error": null
+    },
+    {
+      "case_id": "D4",
+      "run": 1,
+      "scores": {
+        "clean_precision": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 35923,
+      "output_tokens": 1322,
+      "cost_usd": 0.085066,
+      "error": null
+    },
+    {
+      "case_id": "D5",
+      "run": 1,
+      "scores": {
+        "clean_precision": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 20428,
+      "output_tokens": 529,
+      "cost_usd": 0.046146,
+      "error": null
+    },
+    {
+      "case_id": "D1",
+      "run": 2,
+      "scores": {
+        "vuln_recall": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 24939,
+      "output_tokens": 2158,
+      "cost_usd": 0.071458,
+      "error": null
+    },
+    {
+      "case_id": "D2",
+      "run": 2,
+      "scores": {
+        "vuln_recall": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 23894,
+      "output_tokens": 1964,
+      "cost_usd": 0.067428,
+      "error": null
+    },
+    {
+      "case_id": "D3",
+      "run": 2,
+      "scores": {
+        "hygiene_recall": 1.0
+      },
+      "passed": true,
+      "input_tokens": 14175,
+      "output_tokens": 913,
+      "cost_usd": 0.03748,
+      "error": null
+    },
+    {
+      "case_id": "D4",
+      "run": 2,
+      "scores": {
+        "clean_precision": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 35923,
+      "output_tokens": 1318,
+      "cost_usd": 0.085026,
+      "error": null
+    },
+    {
+      "case_id": "D5",
+      "run": 2,
+      "scores": {
+        "clean_precision": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 20428,
+      "output_tokens": 549,
+      "cost_usd": 0.046346,
+      "error": null
+    },
+    {
+      "case_id": "D1",
+      "run": 3,
+      "scores": {
+        "vuln_recall": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 24939,
+      "output_tokens": 2239,
+      "cost_usd": 0.072268,
+      "error": null
+    },
+    {
+      "case_id": "D2",
+      "run": 3,
+      "scores": {
+        "vuln_recall": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 23894,
+      "output_tokens": 2002,
+      "cost_usd": 0.067808,
+      "error": null
+    },
+    {
+      "case_id": "D3",
+      "run": 3,
+      "scores": {
+        "hygiene_recall": 1.0
+      },
+      "passed": true,
+      "input_tokens": 14175,
+      "output_tokens": 923,
+      "cost_usd": 0.03758,
+      "error": null
+    },
+    {
+      "case_id": "D4",
+      "run": 3,
+      "scores": {
+        "clean_precision": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 35923,
+      "output_tokens": 1272,
+      "cost_usd": 0.084566,
+      "error": null
+    },
+    {
+      "case_id": "D5",
+      "run": 3,
+      "scores": {
+        "clean_precision": 1.0,
+        "no_fabricated_advisories": 1.0
+      },
+      "passed": true,
+      "input_tokens": 20428,
+      "output_tokens": 565,
+      "cost_usd": 0.046506,
+      "error": null
+    }
+  ],
+  "summary": [
+    {
+      "criterion": "vuln_recall",
+      "threshold": 0.8,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "no_fabricated_advisories",
+      "threshold": 1.0,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "hygiene_recall",
+      "threshold": 0.8,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "clean_precision",
+      "threshold": 1.0,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    }
+  ],
+  "total_cost_usd": 0.927254
+}

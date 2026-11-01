@@ -1,0 +1,249 @@
+{
+  "agent": "adversarial_reviewer",
+  "model": "claude-sonnet-5-5",
+  "effort": "high",
+  "prompt_sha256": "b504cbd555961864660eadb338f896456088df1355bdfb8c598f56c201d3a25f",
+  "skills_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "generated_at": "2026-11-01T02:56:30.795Z",
+  "runs": 3,
+  "cases": [
+    {
+      "case_id": "R1",
+      "run": 1,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "critical_calibration": 1.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9618,
+      "output_tokens": 720,
+      "cost_usd": 0.026436,
+      "error": null
+    },
+    {
+      "case_id": "R2",
+      "run": 1,
+      "scores": {
+        "false_challenge_rate": 0.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9372,
+      "output_tokens": 455,
+      "cost_usd": 0.023294,
+      "error": null
+    },
+    {
+      "case_id": "R3",
+      "run": 1,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9204,
+      "output_tokens": 941,
+      "cost_usd": 0.027818,
+      "error": null
+    },
+    {
+      "case_id": "R4",
+      "run": 1,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "critical_calibration": 1.0
+      },
+      "passed": true,
+      "input_tokens": 11240,
+      "output_tokens": 1097,
+      "cost_usd": 0.03345,
+      "error": null
+    },
+    {
+      "case_id": "R5",
+      "run": 1,
+      "scores": {
+        "false_challenge_rate": 0.0
+      },
+      "passed": true,
+      "input_tokens": 11174,
+      "output_tokens": 440,
+      "cost_usd": 0.026748,
+      "error": null
+    },
+    {
+      "case_id": "R1",
+      "run": 2,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "critical_calibration": 1.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9618,
+      "output_tokens": 708,
+      "cost_usd": 0.026316,
+      "error": null
+    },
+    {
+      "case_id": "R2",
+      "run": 2,
+      "scores": {
+        "false_challenge_rate": 0.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9372,
+      "output_tokens": 388,
+      "cost_usd": 0.022624,
+      "error": null
+    },
+    {
+      "case_id": "R3",
+      "run": 2,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9204,
+      "output_tokens": 887,
+      "cost_usd": 0.027278,
+      "error": null
+    },
+    {
+      "case_id": "R4",
+      "run": 2,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "critical_calibration": 1.0
+      },
+      "passed": true,
+      "input_tokens": 11268,
+      "output_tokens": 1176,
+      "cost_usd": 0.034296,
+      "error": null
+    },
+    {
+      "case_id": "R5",
+      "run": 2,
+      "scores": {
+        "false_challenge_rate": 0.0
+      },
+      "passed": true,
+      "input_tokens": 11180,
+      "output_tokens": 539,
+      "cost_usd": 0.02775,
+      "error": null
+    },
+    {
+      "case_id": "R1",
+      "run": 3,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "critical_calibration": 1.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9618,
+      "output_tokens": 689,
+      "cost_usd": 0.026126,
+      "error": null
+    },
+    {
+      "case_id": "R2",
+      "run": 3,
+      "scores": {
+        "false_challenge_rate": 0.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9372,
+      "output_tokens": 435,
+      "cost_usd": 0.023094,
+      "error": null
+    },
+    {
+      "case_id": "R3",
+      "run": 3,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "evidence_verified": 1.0
+      },
+      "passed": true,
+      "input_tokens": 9204,
+      "output_tokens": 842,
+      "cost_usd": 0.026828,
+      "error": null
+    },
+    {
+      "case_id": "R4",
+      "run": 3,
+      "scores": {
+        "defect_catch_rate": 1.0,
+        "critical_calibration": 1.0
+      },
+      "passed": true,
+      "input_tokens": 11291,
+      "output_tokens": 1147,
+      "cost_usd": 0.034052,
+      "error": null
+    },
+    {
+      "case_id": "R5",
+      "run": 3,
+      "scores": {
+        "false_challenge_rate": 0.0
+      },
+      "passed": true,
+      "input_tokens": 11123,
+      "output_tokens": 356,
+      "cost_usd": 0.025806,
+      "error": null
+    }
+  ],
+  "summary": [
+    {
+      "criterion": "defect_catch_rate",
+      "threshold": 0.8,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "false_challenge_rate",
+      "threshold": 0.2,
+      "per_run_mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "critical_calibration",
+      "threshold": 0.8,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "evidence_verified",
+      "threshold": 0.8,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    }
+  ],
+  "total_cost_usd": 0.411916
+}

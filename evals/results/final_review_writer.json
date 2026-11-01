@@ -1,0 +1,281 @@
+{
+  "agent": "final_review_writer",
+  "model": "claude-sonnet-5-5",
+  "effort": "low",
+  "prompt_sha256": "6e730c26d74a029acfb19329a8b09be40aa21730be58504b3467fe2660395783",
+  "skills_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "judge": {
+    "model": "claude-sonnet-5-5",
+    "effort": "medium",
+    "prompt_sha256": "e5e5a9a3edd37ed594657305a2910715a03ea321d2abb4223bbb48598fc62629"
+  },
+  "generated_at": "2026-11-01T02:59:26.116Z",
+  "runs": 3,
+  "cases": [
+    {
+      "case_id": "W1",
+      "run": 1,
+      "scores": {
+        "no_new_findings": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 4478,
+      "output_tokens": 872,
+      "cost_usd": 0.017676,
+      "error": null
+    },
+    {
+      "case_id": "W2",
+      "run": 1,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 5731,
+      "output_tokens": 1308,
+      "cost_usd": 0.024542,
+      "error": null
+    },
+    {
+      "case_id": "W3",
+      "run": 1,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 4825,
+      "output_tokens": 1033,
+      "cost_usd": 0.01998,
+      "error": null
+    },
+    {
+      "case_id": "W4",
+      "run": 1,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 7480,
+      "output_tokens": 1737,
+      "cost_usd": 0.03233,
+      "error": null
+    },
+    {
+      "case_id": "W5",
+      "run": 1,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 4.0
+      },
+      "passed": true,
+      "input_tokens": 5961,
+      "output_tokens": 1440,
+      "cost_usd": 0.026322,
+      "error": null
+    },
+    {
+      "case_id": "W1",
+      "run": 2,
+      "scores": {
+        "no_new_findings": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 4502,
+      "output_tokens": 876,
+      "cost_usd": 0.017764,
+      "error": null
+    },
+    {
+      "case_id": "W2",
+      "run": 2,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 6018,
+      "output_tokens": 1593,
+      "cost_usd": 0.027966,
+      "error": null
+    },
+    {
+      "case_id": "W3",
+      "run": 2,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 4.0
+      },
+      "passed": true,
+      "input_tokens": 4760,
+      "output_tokens": 976,
+      "cost_usd": 0.01928,
+      "error": null
+    },
+    {
+      "case_id": "W4",
+      "run": 2,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 4.0
+      },
+      "passed": true,
+      "input_tokens": 7489,
+      "output_tokens": 1733,
+      "cost_usd": 0.032308,
+      "error": null
+    },
+    {
+      "case_id": "W5",
+      "run": 2,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 4.0
+      },
+      "passed": true,
+      "input_tokens": 5874,
+      "output_tokens": 1412,
+      "cost_usd": 0.025868,
+      "error": null
+    },
+    {
+      "case_id": "W1",
+      "run": 3,
+      "scores": {
+        "no_new_findings": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 4529,
+      "output_tokens": 922,
+      "cost_usd": 0.018278,
+      "error": null
+    },
+    {
+      "case_id": "W2",
+      "run": 3,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 5896,
+      "output_tokens": 1477,
+      "cost_usd": 0.026562,
+      "error": null
+    },
+    {
+      "case_id": "W3",
+      "run": 3,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 4782,
+      "output_tokens": 970,
+      "cost_usd": 0.019264,
+      "error": null
+    },
+    {
+      "case_id": "W4",
+      "run": 3,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 5.0
+      },
+      "passed": true,
+      "input_tokens": 7440,
+      "output_tokens": 1713,
+      "cost_usd": 0.03201,
+      "error": null
+    },
+    {
+      "case_id": "W5",
+      "run": 3,
+      "scores": {
+        "no_new_findings": 1.0,
+        "high_severity_coverage": 1.0,
+        "structure_valid_first_try": 1.0,
+        "tone_score": 4.0
+      },
+      "passed": true,
+      "input_tokens": 5955,
+      "output_tokens": 1479,
+      "cost_usd": 0.0267,
+      "error": null
+    }
+  ],
+  "summary": [
+    {
+      "criterion": "no_new_findings",
+      "threshold": 1.0,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "high_severity_coverage",
+      "threshold": 0.9,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "structure_valid_first_try",
+      "threshold": 0.9,
+      "per_run_mean": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "passed_all_runs": true
+    },
+    {
+      "criterion": "tone_score",
+      "threshold": 4.0,
+      "per_run_mean": [
+        4.8,
+        4.4,
+        4.8
+      ],
+      "passed_all_runs": true
+    }
+  ],
+  "total_cost_usd": 0.36685
+}
