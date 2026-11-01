@@ -50,6 +50,10 @@ COMMANDS = {
     "results": ([], True, True, False, False),
 }
 PACKAGE_STEPS = ["package", "build", "validate"]
+RESULTS_GLOB = "evals/results/*.json"
+RUNS_GLOB = "examples/sample-runs/*/*/audit.jsonl"
+EVIDENCE_GLOBS = {"Stage 4 continuity": RESULTS_GLOB, "Audit": RUNS_GLOB, "Decisions": RUNS_GLOB}
+BARE_DIRECTORIES = ("evals/results", "examples/sample-runs")
 
 MAP = """\
 # Title
@@ -150,6 +154,29 @@ def _paths(cell):
 
 def _pathless(rows):
     return [row[0] for row in rows if not _paths(row[2])]
+
+
+def _is_bare_directory(path):
+    parts = [part for part in path.split("/") if part]
+    while parts and set(parts[-1]) == {"*"}:
+        parts.pop()
+    return "/".join(parts) in BARE_DIRECTORIES
+
+
+def _evidence_map_errors(rows):
+    """Return a message for each of the three evidence rows that lacks its glob or cites a results or runs directory
+    bare or with only wildcards below it, and for each such row the map does not hold.
+    """
+    errors = []
+    for label, glob in EVIDENCE_GLOBS.items():
+        found = [_paths(row[2]) for row in rows if row[0] == label]
+        if not found:
+            errors.append(f"{label}: row not found")
+        for paths in found:
+            if glob not in paths:
+                errors.append(f"{label}: does not cite {glob}")
+            errors += [f"{label}: cites bare {path}" for path in paths if _is_bare_directory(path)]
+    return errors
 
 
 def _plain(path):
@@ -288,6 +315,17 @@ def _unresolved_arguments(text):
     return _missing(config.ROOT, named)
 
 
+EVIDENCE_MAP = f"""\
+## Evidence map
+
+| Item | What it shows | Paths |
+| --- | --- | --- |
+| Stage 4 continuity | gateway | `{RESULTS_GLOB}` |
+| Audit | llm_call lines | `{RUNS_GLOB}` |
+| Decisions | decide | `{RUNS_GLOB}` |
+"""
+
+
 def _tree(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "a.md").write_text("")
@@ -300,6 +338,66 @@ def test_every_path_in_the_evidence_map_exists():
     paths = [path for row in _rows(_text()) for path in _paths(row[2])]
     assert paths
     assert _missing(config.ROOT, paths) == []
+
+
+def test_the_stage_4_audit_and_decisions_rows_cite_the_recorded_evidence_globs():
+    assert _evidence_map_errors(_rows(_text())) == []
+
+
+RESULTS_MISSING = f"Stage 4 continuity: does not cite {RESULTS_GLOB}"
+RUNS_MISSING = [f"Audit: does not cite {RUNS_GLOB}", f"Decisions: does not cite {RUNS_GLOB}"]
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "errors"),
+    [
+        (RESULTS_GLOB, "evals/results/", [RESULTS_MISSING, "Stage 4 continuity: cites bare evals/results/"]),
+        (RESULTS_GLOB, "evals/results", [RESULTS_MISSING, "Stage 4 continuity: cites bare evals/results"]),
+        (RESULTS_GLOB, f"{RESULTS_GLOB}`, `evals/results/", ["Stage 4 continuity: cites bare evals/results/"]),
+        (
+            RUNS_GLOB,
+            "examples/sample-runs/",
+            [
+                RUNS_MISSING[0],
+                "Audit: cites bare examples/sample-runs/",
+                RUNS_MISSING[1],
+                "Decisions: cites bare examples/sample-runs/",
+            ],
+        ),
+    ],
+)
+def test_a_row_without_its_evidence_glob_or_with_a_bare_directory_is_reported(old, new, errors):
+    assert _evidence_map_errors(_rows(EVIDENCE_MAP.replace(f"`{old}`", f"`{new}`"))) == errors
+
+
+def test_an_evidence_map_without_one_of_the_three_rows_is_reported():
+    rows = [row for row in _rows(EVIDENCE_MAP) if row[0] != "Audit"]
+    assert _evidence_map_errors(rows) == ["Audit: row not found"]
+
+
+@pytest.mark.parametrize(
+    ("old", "span", "bare"),
+    [
+        (RESULTS_GLOB, "evals/results/*", "evals/results/*"),
+        (RESULTS_GLOB, "evals/results/**", "evals/results/**"),
+        (RESULTS_GLOB, "evals/results/*/", "evals/results/*/"),
+        (RUNS_GLOB, "examples/sample-runs", "examples/sample-runs"),
+        (RUNS_GLOB, "examples/sample-runs/*", "examples/sample-runs/*"),
+    ],
+)
+def test_a_bare_directory_cited_as_a_wildcard_beside_the_glob_is_reported(old, span, bare):
+    text = EVIDENCE_MAP.replace(f"`{old}`", f"`{old}`, `{span}`")
+    assert [error for error in _evidence_map_errors(_rows(text)) if "bare" in error]
+    assert all(f"cites bare {bare}" in error for error in _evidence_map_errors(_rows(text)))
+
+
+def test_a_repeated_evidence_row_is_checked_too():
+    rows = [["Audit", "again", f"`{RUNS_GLOB}`, `examples/sample-runs/`"], *_rows(EVIDENCE_MAP)]
+    assert _evidence_map_errors(rows) == ["Audit: cites bare examples/sample-runs/"]
+
+
+def test_a_glob_that_matches_no_file_is_reported(tmp_path):
+    assert _missing(_tree(tmp_path), [RESULTS_GLOB, RUNS_GLOB]) == [RESULTS_GLOB, RUNS_GLOB]
 
 
 def test_the_evidence_map_lists_the_six_rubric_cards_in_order_and_then_the_five_content_rules():
