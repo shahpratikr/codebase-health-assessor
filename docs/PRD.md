@@ -38,12 +38,10 @@ The command line runs an assessment end to end and records a human decision on a
 
 For the maintainer it also:
 - Records each eval execution in an append-only history: one line for each agent that finishes, with its scores against each threshold, fingerprints of the prompts and checklists it ran with, its cost and a one-line note on what changed. A failing execution is recorded too, so each change to a prompt can be read next to its effect.
-- Tests its own human checkpoints with an offline bypass campaign (`python -m evals.punchout`): scripted attempts to get past each gate, or to record a decision the rules refuse, run against the real gate code with no model call, no API key and no cost. It fails when a checkpoint does not hold.
-- Packages the repository for certification with the `submission` tools. `python -m submission.build` writes into the archive the submission manifest, derived from the archive's own files, and the iteration log, rendered from the eval history. It refuses to build while evidence the manifest would cite is missing or a file has no classification. `python -m submission.validate` checks the archive against the published intake rules, all violations at once, without unpacking it.
-
-Planned:
-- Keeps committed measurements of each of its five agents with the code: the eval suites and their runner are built, and the results come from manual runs.
+- Keeps committed measurements of each of its five agents with the code, from real eval runs against the API.
 - Ships a sample client repository and two recorded runs of it: one that finalized, and one that waited for a human and was decided.
+- Tests its own human checkpoints with an offline bypass campaign (`evals.punchout`): scripted attempts to get past each gate, or to record a decision the rules refuse, run against the real gate code with no model call, no API key and no cost. It fails when a checkpoint does not hold.
+- Packages the repository for certification. A build step writes into the archive the submission manifest, derived from the archive's own files, and the iteration log, rendered from the eval history. It refuses to build while evidence the manifest would cite is missing or a file has no classification. A validation step checks the archive against the published intake rules, all violations at once, without unpacking it.
 
 ## What it does not do
 
@@ -52,7 +50,7 @@ Planned:
 - No package ecosystems other than PyPI and npm.
 - No git history: it reads the working tree only, so a secret removed in a later commit is not found.
 - Never writes to, fixes or runs the client's code.
-- Is not the certification intake: `submission.validate` mirrors the intake rules as published, so a pass does not prove the submission will be accepted.
+- Is not the certification intake: the archive validation mirrors the intake rules as published, so a pass does not prove the submission will be accepted.
 - No checks beyond the four steps. Licence audits, infrastructure-as-code review and similar assessments are out of scope.
 
 ## How it is used
@@ -99,7 +97,7 @@ Planned:
 - **Eval history**: the append-only record of eval executions, one line for each agent that finishes, with the maintainer's note.
 - **Bypass campaign**: scripted attempts to get past the human checkpoints without a human decision, run offline against the real gate code.
 - **Iteration log**: the eval history rendered as a table per agent, with the first and last execution's results side by side. It is written into the submission archive, not kept in the repository.
-- **Submission manifest**: `manifest.yaml` at the root of the submission archive. It tells the certification intake what each file is: the coordinator, the agents and their tools, the workflows with each step's prompt, evals and logs, the punch-outs and their evidence, the adversarial review, the exported commit log and, with a reason each, the files not judged.
+- **Submission manifest**: the table of contents at the root of the submission archive. It tells the certification intake what each file is: the coordinator, the agents and their tools, the workflows with each step's prompt, evals and logs, the punch-outs and their evidence, the adversarial review, the exported commit log and, with a reason each, the files not judged.
 
 ## Open questions
 

@@ -16,7 +16,7 @@
   1. `git log --stat --date=iso > git_log.txt && git archive --format=zip -o submission.zip HEAD && zip -u submission.zip git_log.txt`
   2. `poetry run python -m submission.build submission.zip`: writes `manifest.yaml` and `docs/iterations.md` into the ZIP; exits 1 listing every problem, 2 when the ZIP is unreadable or already holds either file
   3. `poetry run python -m submission.validate submission.zip`: exits 1 when an intake rule is violated
-- slow: none; the whole suite runs in about 3 s
+- slow: the whole suite takes about 110 s; run the single file for the code you change while iterating, and the full suite once at the end
 
 ## Testing
 - pytest, `testpaths = ["tests"]`. Everything is an offline unit test: no network, no API key. Evals are separate from pytest and are the only real-API runs.
@@ -33,7 +33,7 @@
 - Case tables use pytest's `parametrize` mark.
 - Every static or structural check needs a planted-violation case that makes it fail. See the `src_copy` fixture and `test_detects_planted_violation` in `tests/test_no_cli_runtime.py:128` and `:207`.
 - `tests/test_gitignore.py` and `tests/test_submission_build.py` shell out to `git` and are skipped when git is missing, and the build tests also when the checkout is no git work tree. The build tests archive what `git ls-files -co --exclude-standard` lists, with stubs in place of the evidence manual runs commit, so an untracked file that no `submission/rules.py` rule classifies fails them.
-- Known baseline failures: none (394 passed).
+- Known baseline failures: none.
 
 ## Conventions
 - Lines up to 120 characters; no formatter is configured (`src/assessor/llm.py:70`, `tests/conftest.py:8`).
@@ -43,7 +43,7 @@
 - Constants and closed sets are UPPER_CASE tuples in `config.py`, referenced as `config.X` (`config.py:15`, `config.py:27`, `audit.py:47`). The submission tools keep their closed sets in `submission/rules.py`.
 - Environment variables are read only in `config.py`, at call time (`config.runs_dir()`, `config.py:36`).
 - Bad input raises `ValueError` with a message that names the source and the bad value (`config.py:52`, `audit.py:25`, `audit.py:48`).
-- A typed error carries a `code` from a closed set in `config` and rejects unknown codes in `__init__` (`LLMError`, `llm.py:31`). DispatchError *(planned)* extends `config.LLM_ERROR_CODES` rather than repeating them.
+- A typed error carries a `code` from a closed set in `config` and rejects unknown codes in `__init__` (`LLMError`, `llm.py:31`). `DispatchError` (`guardrails.py:53`) does the same with `config.DISPATCH_ERROR_CODES`, which includes `config.LLM_ERROR_CODES` (`config.py:30`, `:37`).
 - Time sources are injected parameters that default to the real source (`clock=utc_now`, `audit.py:46`; `timer=time.perf_counter`, `llm.py:66`).
 - Repo-level files resolve from `config.ROOT` constants, never from the working directory (`config.py:8-10`). Only the runs dir is relative to the working directory.
 - New files go here:
@@ -51,7 +51,7 @@
   - JSON Schemas: `schemas/<contract>.schema.json`, Draft 2020-12, loaded through `config.SCHEMAS_DIR` (`audit.py:15`)
   - repo data files: `config/`
   - packaging tools: `submission/<tool>.py`, run as `python -m submission.<tool>`; a file the package line ships needs a rule in `submission/rules.py` `CLASSIFICATION`, or the build fails
-  - *(planned)* `manifests/<agent>.json`, `prompts/<agent>.md`, `skills/<name>.md`, `evals/<agent>/cases/<case_id>/{case.json, repo/…}`
+  - agent data: `manifests/<agent>.json`, `prompts/<agent>.md`, `skills/<name>.md`, `evals/<agent>/cases/<case_id>/{case.json, repo/…}`
 
 ## Invariants
 - **Imports.** A module imports only what its row in docs/ARCHITECTURE.md, Components, "Depends on" lists. In addition:
@@ -78,16 +78,16 @@
 - **No ZIP path is excluded silently:** the build fails on a file that no rule in `submission/rules.py` classifies (`test_every_unclassified_path_is_listed_and_fails_the_build`).
 - **`submission.build` and `submission.validate` never extract a ZIP** (`test_the_builder_never_extracts`, `test_the_validator_never_extracts_and_writes_nothing`).
 - **`config/pricing.json` matches Anthropic's live pricing page.** Change it and `test_shipped_pricing_has_the_verified_prices` together, only from that page.
-- *(planned)* The coordinator manifest holds only `launch_*` tools, each mapped to a sub-agent, and the loader fails closed (`tests/test_manifest.py`, `tests/test_coordinator_dispatch_only.py`).
-- *(planned)* Every sub-agent invocation starts a new message list, and no message list is shared (`tests/test_isolation.py`).
-- *(planned)* Every sub-agent output passes `guardrails.validate()` and then `redact()` before it reaches the coordinator or disk (`tests/test_runner.py`, `tests/test_redaction.py`).
-- *(planned)* Conversations are append-only, and earlier messages are never edited (`tests/test_coordinator.py`).
-- *(planned)* The harness never dispatches without a coordinator `tool_use` (`tests/test_coordinator.py`).
-- *(planned)* `decisions.jsonl` is append-only. `run.json`, `report.md`, `disposition.json` and `summary.json` are written once (`tests/test_cli_decide.py`).
-- *(planned)* `report.md` headings come only from `report.py`'s title map and the computed status (`tests/test_report.py`).
-- *(planned)* File tools never resolve a path outside the workspace root (`tests/test_sandbox.py`).
-- *(planned)* Every manifest model is a `config/pricing.json` key, and every file a manifest references exists (`tests/test_manifest.py`, `tests/test_runner.py`).
-- *(planned)* Every path in the README evidence map exists (`tests/test_readme_evidence_map.py`).
+- **The coordinator manifest holds only `launch_*` tools, each mapped to a sub-agent, and the loader fails closed** (`test_coordinator_holds_exactly_the_four_launch_tools`, `test_launch_tool_without_a_subagent_manifest_is_refused` in `tests/test_manifest.py`; `tests/test_coordinator_dispatch_only.py`). The harness dispatches only on a coordinator `tool_use`: not enforced by a dedicated test.
+- **Every sub-agent invocation starts a new message list, and no message list is shared** (`test_each_invocation_starts_a_new_message_list`, `test_reviewer_request_never_holds_the_examiner_conversation` in `tests/test_isolation.py`).
+- **Every sub-agent output passes `guardrails.validate()` and then `redact()` before it reaches the coordinator or disk** (`test_an_answer_that_fails_its_guardrail_is_rejected_and_audited`, `test_accepted_examination_is_numbered_and_redacted` in `tests/test_runner.py`; `test_rejected_output_is_never_stored` in `tests/test_coordinator.py`).
+- **Conversations are append-only, and earlier messages are never edited** (`test_coordinator_messages_are_append_only`).
+- **`decisions.jsonl` is append-only, and a run file that exists is never overwritten** (`test_a_decision_changes_only_the_decisions_file_and_appends_one_audit_line`, `tests/test_cli_run.py::test_a_run_file_that_already_exists_is_never_overwritten`).
+- **`report.md` headings come only from `report.py`'s title map and the computed status** (`test_the_report_has_no_heading_but_the_fixed_ones`, `test_a_heading_status_ignores_what_the_prose_says`).
+- **File tools never resolve a path outside the workspace root** (`test_resolve_refuses_parent_escapes`, `test_resolve_refuses_absolute_paths_even_inside_the_root` in `tests/test_sandbox.py`).
+- **Every manifest model is a `config/pricing.json` key, and every file a manifest references exists** (`test_unpriced_model_is_refused` in `tests/test_manifest.py`; `test_a_missing_agent_file_raises_before_any_call` in `tests/test_runner.py`).
+- **Every path in the README evidence map exists, the Stage 4 continuity row cites `evals/results/*.json`, and the Audit and Decisions rows cite `examples/sample-runs/*/*/audit.jsonl`** (`test_every_path_in_the_evidence_map_exists`, `test_the_stage_4_audit_and_decisions_rows_cite_the_recorded_evidence_globs`).
+- **`docs/PRD.md` and `docs/ARCHITECTURE.md` name the tools and files `tests/test_docs_mention_tools.py` lists** (that test).
 
 ## Constraints
 - Never commit `.env`, `runs/`, `evals/.runs/`, `dist/` or `submission.zip` (`.gitignore`; `tests/test_gitignore.py::test_generated_and_local_secret_paths_are_ignored`). Never commit `git_log.txt`, `docs/iterations.md` or `manifest.yaml` either: packaging writes them into the ZIP, and `submission.build` refuses a ZIP that already holds the last two.
